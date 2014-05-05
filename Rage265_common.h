@@ -38,8 +38,8 @@ static inline __m128i _mm_mullo_epi32(__m128i a, __m128i b) {
 #endif
 #endif
 
-static inline int min(int a, int b) { return (a < b) ? a : b; }
-static inline int max(int a, int b) { return (a > b) ? a : b; }
+static inline long min(long a, long b) { return (a < b) ? a : b; }
+static inline long max(long a, long b) { return (a > b) ? a : b; }
 
 
 
@@ -100,13 +100,13 @@ static inline __attribute__((always_inline)) unsigned int get_u1(const uint8_t *
 /**
  * 9.3 - CABAC parsing
  */
-struct CABAC_ctx {
+typedef struct {
 	unsigned long ivlCurrRange;
 	unsigned long ivlOffset;
 	const uint8_t *CPB;
 	unsigned int shift;
 	unsigned int lim;
-};
+} CABAC_ctx;
 
 #if ULONG_MAX == 4294967295U
 #define betoh be32toh
@@ -114,7 +114,7 @@ struct CABAC_ctx {
 #define betoh be64toh
 #endif
 
-static inline void renorm(struct CABAC_ctx *c, unsigned int v) {
+static inline void renorm(CABAC_ctx *c, unsigned int v) {
 	unsigned long buf = 0;
 	if (c->shift < c->lim) {
 		unsigned long msb = betoh(((unsigned long *)c->CPB)[c->shift / LONG_BIT]);
@@ -126,7 +126,7 @@ static inline void renorm(struct CABAC_ctx *c, unsigned int v) {
 	c->ivlOffset = (c->ivlOffset << v) | (buf >> (LONG_BIT - v));
 }
 
-static unsigned int get_ae(struct CABAC_ctx *c, uint8_t *state) {
+static unsigned int get_ae(CABAC_ctx *c, uint8_t *state) {
 	static const int rangeTabLps[4 * 64] = {
 		128, 128, 128, 123, 116, 111, 105, 100, 95, 90, 85, 81, 77, 73, 69, 66,
 		62, 59, 56, 53, 51, 48, 46, 43, 41, 39, 37, 35, 33, 32, 30, 29, 27, 26,
@@ -184,11 +184,23 @@ static unsigned int get_ae(struct CABAC_ctx *c, uint8_t *state) {
 	return idx & 1;
 }
 
-static inline unsigned int get_bypass(struct CABAC_ctx *c) {
+static inline unsigned int get_bypass(CABAC_ctx *c) {
 	c->ivlCurrRange >>= 1;
 	unsigned long mask = ~(unsigned long)(c->ivlOffset - c->ivlCurrRange) >> (LONG_BIT - 1);
 	c->ivlOffset -= c->ivlCurrRange & mask;
 	return -mask;
 }
+
+
+
+typedef struct {
+	pthread_t thread_id;
+	pthread_mutex_t *lock;
+	pthread_cond_t target_changed;
+	pthread_cond_t *target_complete;
+	uint8_t *target;
+	CABAC_ctx c;
+	unsigned int CPB_size; // in bytes, 27 significant bits
+} Worker_ctx;
 
 #endif
