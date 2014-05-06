@@ -4,6 +4,17 @@
 #ifndef RAGE265_COMMON_H
 #define RAGE265_COMMON_H
 
+#if DEBUG >= 1
+#include <stdio.h>
+static inline const char *red_if(int cond) { return (cond) ? " style=\"color: red\"" : ""; }
+#else
+#define printf(...) ((void)0)
+#define NDEBUG 1
+#endif
+#if DEBUG != 2
+#define fprintf(...) ((void)0)
+#endif
+
 #include <assert.h>
 #include <endian.h>
 #include <limits.h>
@@ -201,6 +212,7 @@ typedef struct {
 	uint8_t *target;
 	CABAC_ctx c;
 	unsigned int CPB_size; // in bytes, 27 significant bits
+	unsigned int nal_unit_type:6;
 } Worker_ctx;
 
 #endif

@@ -27,8 +27,8 @@
  */
 #ifdef __SSSE3__
 size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
-	ssize_t chunk = (uint8_t *)((uintptr_t)buf & -sizeof(__m128i)) - buf;
-	for (size_t u = 0; chunk < (ssize_t)len; u = chunk += sizeof(__m128i)) {
+	ptrdiff_t chunk = (uint8_t *)((uintptr_t)buf & -sizeof(__m128i)) - buf;
+	for (size_t u = 0; chunk < (ptrdiff_t)len; u = chunk += sizeof(__m128i)) {
 		/* Skip chunks without a zero odd byte. */
 		if (__builtin_expect((_mm_movemask_epi8(_mm_cmpeq_epi8(*(__m128i *)(buf + chunk), _mm_setzero_si128())) & 0xaaaa) != 0, 0)) {
 			size_t lim = min(chunk + sizeof(__m128i) + 2, len);
@@ -49,11 +49,46 @@ size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
  * Parse a NAL unit, returning a bitfield of error codes.
  */
 unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
+	static const char * const nal_unit_type_names[64] = {
+		[0] = "Trailing non-reference picture",
+		[1] = "Trailing reference picture",
+		[2] = "Temporal Sub-layer Access non-reference picture",
+		[3] = "Temporal Sub-layer Access reference picture",
+		[4] = "Step-wise Temporal Sub-layer Access non-reference picture",
+		[5] = "Step-wise Temporal Sub-layer Access reference picture",
+		[6] = "Random Access Decodable Leading non-reference picture",
+		[7] = "Random Access Decodable Leading reference picture",
+		[8] = "Random Access Skipped Leading non-reference picture",
+		[9] = "Random Access Skipped Leading reference picture",
+		[10 ... 15] = "unknown",
+		[16] = "Broken Link Access picture with Leading Picture",
+		[17] = "Broken Link Access picture with Random Access Decodable Leading picture",
+		[18] = "Broken Link Access picture without Leading Picture",
+		[19] = "Instantaneous Decoding Refresh picture with Random Access Decodable Leading picture",
+		[20] = "Instantaneous Decoding Refresh picture without Leading Picture",
+		[21] = "Clean Random Access picture",
+		[22 ... 31] = "unknown",
+		[32] = "Video Parameter Set",
+		[33] = "Sequence Parameter Set",
+		[34] = "Picture Parameter Set",
+		[35] = "Access Unit Delimiter",
+		[36] = "End Of Sequence",
+		[37] = "End Of Bitstream",
+		[38] = "Filler Data",
+		[39] = "Prefix Supplemental Enhancement Information",
+		[40] = "Suffix Supplemental Enhancement Information",
+		[41 ... 63] = "unknown",
+	};
+	typedef unsigned int (*Parser)(Rage265_ctx *, Worker_ctx *);
+	static const Parser parse_nal_unit[64] = {
+		
+	};
+	
 	/* On first call, initialise the main structure. */
 	if (r->max_workers == 0)
 		r->max_workers = get_nprocs();
 	if (r->workers == NULL) {
-		r->workers = calloc(r->max_workers, sizeof(*r->workers));
+		r->workers = calloc(r->max_workers, sizeof(Worker_ctx));
 		if (r->workers == NULL)
 			return RAGE265_ERROR_NO_MEMORY;
 		r->lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
@@ -105,6 +140,25 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 	w->c.lim = 8 * (dst - w->c.CPB) + 7 - __builtin_ctz(*dst);
 	memset(dst + 1, 0xff, suffix_size);
 	
-	/* Branch on nal_unit_type. */
+	/* Parse the nal_unit_header(). */
 	unsigned int nal_unit_header = (buf[0] << 8) | buf[1];
+	w->nal_unit_type = nal_unit_header >> 9;
+	unsigned int nuh_layer_id = (nal_unit_header >> 3) & 0x3f;
+	unsigned int nuh_temporal_id = (nal_unit_header - 1) & 0x7;
+	printf("<ul class=\"frame\">\n"
+		"<li%s>nal_unit_type: <code>%u (%s)</code></li>\n"
+		"<li>nuh_layer_id: <code>%u</code></li>\n"
+		"<li>nuh_temporal_id: <code>%u</code></li>\n",
+		red_if(parse_nal_unit[w->nal_unit_type] == NULL), w->nal_unit_type, nal_unit_type_names[w->nal_unit_type],
+		nuh_layer_id,
+		nuh_temporal_id);
+	
+	/* Branch on nal_unit_type. */
+	unsigned int error_flags = 0;
+	if (parse_nal_unit[w->nal_unit_type] != NULL)
+		error_flags = parse_nal_unit[w->nal_unit_type](r, w);
+	if (error_flags)
+		printf("<li style=\"color: red\">Error 0x%x</li>\n", error_flags);
+	printf("</ul>\n");
+	return error_flags;
 }
