@@ -22,6 +22,112 @@
 
 
 
+static void parse_profile_tier_level(Rage265_worker *w) {
+	
+}
+
+
+
+static void parse_hrd_parameters(Rage265_worker *w,
+	unsigned int cprms_present_flag, unsigned int max_sub_layers) {
+	
+}
+
+
+
+/**
+ * This function parses the SPS into a Rage265_SPS structure, and if no error
+ * was detected stores it into the Rage265_ctx object.
+ */
+
+
+
+/**
+ * This function currently only prints the VPS to stdout.
+ */
+static unsigned int parse_VPS(Rage265_ctx *r, Rage265_worker *w) {
+	unsigned int u = htobe16(*(uint16_t *)w->c.CPB);
+	unsigned int vps_video_parameter_set_id = u >> 12;
+	unsigned int vps_max_layers = ((u >> 4) & 0x3f) + 1;
+	unsigned int vps_max_sub_layers = ((u >> 1) + 1) & 0x7;
+	unsigned int vps_temporal_id_nesting_flag = u & 1;
+	printf("<li>vps_video_parameter_set_id: <code>%u</code></li>\n"
+		"<li>vps_max_layers: <code>%u</code></li>\n"
+		"<li>vps_max_sub_layers: <code>%u</code></li>\n"
+		"<li>vps_temporal_id_nesting_flag: <code>%x</code></li>\n",
+		vps_video_parameter_set_id,
+		vps_max_layers,
+		vps_max_sub_layers,
+		vps_temporal_id_nesting_flag);
+	w->c.shift = 32;
+	parse_profile_tier_level(w);
+	unsigned int vps_sub_layer_ordering_info_present_flag = get_u1(w->c.CPB, &w->c.shift);
+	for (unsigned int i = (vps_max_sub_layers - 1) & -vps_sub_layer_ordering_info_present_flag; i < vps_max_sub_layers; i++) {
+		unsigned int vps_max_dec_pic_buffering = get_ue(w->c.CPB, &w->c.shift, 15) + 1;
+		unsigned int vps_max_num_reorder_pics = get_ue(w->c.CPB, &w->c.shift, 15);
+		unsigned int vps_max_latency_increase = get_ue(w->c.CPB, &w->c.shift, 4294967294) - 1;
+		printf("<ul>\n"
+			"<li>vps_max_dec_pic_buffering[%u]: <code>%u</code></li>\n"
+			"<li>vps_max_num_reorder_pics[%u]: <code>%u</code></li>\n"
+			"<li>vps_max_latency_increase[%u]: <code>%d</code></li>\n"
+			"</ul>\n",
+			i, vps_max_dec_pic_buffering,
+			i, vps_max_num_reorder_pics,
+			i, vps_max_latency_increase);
+	}
+	unsigned int vps_max_layer_id = get_uv(w->c.CPB, &w->c.shift, 6);
+	unsigned int vps_num_layer_sets = get_ue(w->c.CPB, &w->c.shift, 1023) + 1;
+	printf("<li>vps_max_layer_id: <code>%u</code></li>\n"
+		"<li>vps_num_layer_sets: <code>%u</code></li>\n",
+		vps_max_layer_id,
+		vps_num_layer_sets);
+	for (unsigned int i = 1; i < vps_num_layer_sets; i++) {
+		for (unsigned int j = 0; j <= vps_max_layer_id; j++) {
+			unsigned int layer_id_included_flag = get_u1(w->c.CPB, &w->c.shift);
+			printf("<ul><li>layer_id_included_flag[%u][%u]: <code>%x</code></li></ul>\n",
+				i, j, layer_id_included_flag);
+		}
+	}
+	unsigned int vps_timing_info_present_flag = get_u1(w->c.CPB, &w->c.shift);
+	if (vps_timing_info_present_flag) {
+		unsigned int vps_num_units_in_tick = get_uv(w->c.CPB, &w->c.shift, 32);
+		unsigned int vps_time_scale = get_uv(w->c.CPB, &w->c.shift, 32);
+		unsigned int vps_poc_proportional_to_timing_flag = get_u1(w->c.CPB, &w->c.shift);
+		printf("<li>vps_num_units_in_tick: <code>%u</code></li>\n"
+			"<li>vps_time_scale: <code>%u</code></li>\n"
+			"<li>vps_poc_proportional_to_timing_flag: <code>%x</code></li>\n",
+			vps_num_units_in_tick,
+			vps_time_scale,
+			vps_poc_proportional_to_timing_flag);
+		if (vps_poc_proportional_to_timing_flag) {
+			unsigned int vps_num_ticks_poc_diff_one = get_ue(w->c.CPB, &w->c.shift, 4294967294) + 1;
+			printf("<li>vps_num_ticks_poc_diff_one: <code>%u</code></li>\n",
+				vps_num_ticks_poc_diff_one);
+		}
+		unsigned int vps_num_hrd_parameters = get_ue(w->c.CPB, &w->c.shift, 1024);
+		printf("<li>vps_num_hrd_parameters: <code>%u</code></li>\n",
+			vps_num_hrd_parameters);
+		for (unsigned int i = 0; i < vps_num_hrd_parameters; i++) {
+			unsigned int hrd_layer_set_idx = get_ue(w->c.CPB, &w->c.shift, 1023);
+			printf("<ul>\n"
+				"<li>hrd_layer_set_idx[%u]: <code>%u</code></li>\n",
+				i, hrd_layer_set_idx);
+			unsigned int cprms_present_flag = 0;
+			if (i > 0)
+				cprms_present_flag = get_u1(w->c.CPB, &w->c.shift);
+			parse_hrd_parameters(w, cprms_present_flag, vps_max_sub_layers);
+			printf("</ul>\n");
+		}
+	}
+	unsigned int vps_extension_flag = get_u1(w->c.CPB, &w->c.shift);
+	printf("<li>vps_extension_flag: <code>%x</code></li>\n", vps_extension_flag);
+	if (vps_extension_flag && w->c.shift < w->c.lim)
+		w->c.shift = w->c.lim;
+	return (w->c.shift != w->c.lim) << RAGE265_ERROR_PARSING_BITSTREAM;
+}
+
+
+
 /**
  * Find the start of the next 00 00 0n pattern, returning len if none was found.
  */
@@ -79,26 +185,26 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 		[40] = "Suffix Supplemental Enhancement Information",
 		[41 ... 63] = "unknown",
 	};
-	typedef unsigned int (*Parser)(Rage265_ctx *, Worker_ctx *);
+	typedef unsigned int (*Parser)(Rage265_ctx *, Rage265_worker *);
 	static const Parser parse_nal_unit[64] = {
-		
+		[32] = parse_VPS,
 	};
 	
 	/* On first call, initialise the main structure. */
 	if (r->max_workers == 0)
 		r->max_workers = get_nprocs();
 	if (r->workers == NULL) {
-		r->workers = calloc(r->max_workers, sizeof(Worker_ctx));
+		r->workers = calloc(r->max_workers, sizeof(Rage265_worker));
 		if (r->workers == NULL)
-			return RAGE265_ERROR_NO_MEMORY;
+			return 1 << RAGE265_ERROR_NO_MEMORY;
 		r->lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		r->worker_available = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
 	}
 	
 	/* Assign an available worker to this NAL payload. */
 	pthread_mutex_lock(&r->lock);
-	Worker_ctx *w = r->workers;
-	for (Worker_ctx *end = w += r->max_workers; w == end; ) {
+	Rage265_worker *w = r->workers;
+	for (Rage265_worker *end = w += r->max_workers; w == end; ) {
 		for (w = r->workers; w < end && w->target != NULL; w++);
 		if (w == end)
 			pthread_cond_wait(&r->worker_available, &r->lock);
@@ -107,7 +213,7 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 	
 	/* Allocate the CPB to let the worker process it asynchronously. */
 	if (len < 2)
-		return RAGE265_ERROR_PARSING_BITSTREAM;
+		return 1 << RAGE265_ERROR_PARSING_BITSTREAM;
 	const unsigned int suffix_size = 128;
 	size_t CPB_size = len - 2 + suffix_size;
 	if (CPB_size > 800000000 / 8 + suffix_size) { // Level 6.2, High tier
@@ -120,7 +226,7 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 			free((uint8_t *)w->c.CPB);
 		w->c.CPB = malloc(CPB_size);
 		if (w->c.CPB == NULL)
-			return RAGE265_ERROR_NO_MEMORY;
+			return 1 << RAGE265_ERROR_NO_MEMORY;
 	}
 	
 	/* Copy the CPB while removing every emulation_prevention_three_byte. */
@@ -137,6 +243,7 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 	/* Trim every cabac_zero_word, delimit the SODB, and append the safety suffix. */
 	while (*dst == 0)
 		dst -= 2;
+	w->c.shift = 0;
 	w->c.lim = 8 * (dst - w->c.CPB) + 7 - __builtin_ctz(*dst);
 	memset(dst + 1, 0xff, suffix_size);
 	
@@ -155,7 +262,7 @@ unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 	
 	/* Branch on nal_unit_type. */
 	unsigned int error_flags = 0;
-	if (parse_nal_unit[w->nal_unit_type] != NULL)
+	if (nuh_layer_id == 0 && parse_nal_unit[w->nal_unit_type] != NULL)
 		error_flags = parse_nal_unit[w->nal_unit_type](r, w);
 	if (error_flags)
 		printf("<li style=\"color: red\">Error 0x%x</li>\n", error_flags);

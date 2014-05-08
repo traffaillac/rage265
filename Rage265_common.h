@@ -62,21 +62,21 @@ static inline long max(long a, long b) { return (a > b) ? a : b; }
 #endif
 
 static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
-	assert(upper<4294967296);
+	assert(upper<4294967295);
 	unsigned int leadingZeroBits, res;
 	if (upper <= 31) {
 		uint16_t buf = (((CPB[*shift / 8] << 8) | CPB[*shift / 8 + 1]) << (*shift % 8));
 		leadingZeroBits = __builtin_clz(buf | 0x0400) - WORD_BIT + 16;
 		res = (buf >> (16 - (2 * leadingZeroBits + 1))) - 1;
 	} else if (upper <= 65534) {
-		unsigned int msb = be32toh(((uint32_t *)CPB)[*shift / 32]);
-		unsigned int lsb = be32toh(((uint32_t *)CPB)[(*shift + 31) / 32]);
+		unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
+		unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
 		uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
 		leadingZeroBits = __builtin_clz(buf | 0x00010000) - WORD_BIT + 32;
 		res = (buf >> (32 - (2 * leadingZeroBits + 1))) - 1;
 	} else {
-		uint64_t msb = be64toh(((uint64_t *)CPB)[*shift / 64]);
-		uint64_t lsb = be64toh(((uint64_t *)CPB)[(*shift + 63) / 64]);
+		uint64_t msb = htobe64(((uint64_t *)CPB)[*shift / 64]);
+		uint64_t lsb = htobe64(((uint64_t *)CPB)[(*shift + 63) / 64]);
 		uint64_t buf = (msb << (*shift % 64)) | (lsb >> (-*shift % 64));
 		leadingZeroBits = clz64(buf | 0x0000000100000000);
 		res = (buf >> (64 - (2 * leadingZeroBits + 1))) - 1;
@@ -94,8 +94,8 @@ static inline __attribute__((always_inline)) int get_se(const uint8_t *CPB, unsi
 }
 
 static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t *CPB, unsigned int *shift, unsigned int v) {
-	unsigned int msb = be32toh(((uint32_t *)CPB)[*shift / 32]);
-	unsigned int lsb = be32toh(((uint32_t *)CPB)[(*shift + 31) / 32]);
+	unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
+	unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
 	uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
 	*shift += v;
 	return buf >> (32 - v);
@@ -120,16 +120,16 @@ typedef struct {
 } CABAC_ctx;
 
 #if ULONG_MAX == 4294967295U
-#define betoh be32toh
+#define htobe htobe32
 #elif ULONG_MAX == 18446744073709551615U
-#define betoh be64toh
+#define htobe htobe64
 #endif
 
 static inline void renorm(CABAC_ctx *c, unsigned int v) {
 	unsigned long buf = 0;
 	if (c->shift < c->lim) {
-		unsigned long msb = betoh(((unsigned long *)c->CPB)[c->shift / LONG_BIT]);
-		unsigned long lsb = betoh(((unsigned long *)c->CPB)[(c->shift + LONG_BIT - 1) / LONG_BIT]);
+		unsigned long msb = htobe(((unsigned long *)c->CPB)[c->shift / LONG_BIT]);
+		unsigned long lsb = htobe(((unsigned long *)c->CPB)[(c->shift + LONG_BIT - 1) / LONG_BIT]);
 		buf = (msb << (c->shift % LONG_BIT)) | (lsb >> (-c->shift % LONG_BIT));
 	}
 	c->shift += v;
@@ -204,7 +204,7 @@ static inline unsigned int get_bypass(CABAC_ctx *c) {
 
 
 
-typedef struct {
+struct Rage265_worker {
 	pthread_t thread_id;
 	pthread_mutex_t *lock;
 	pthread_cond_t target_changed;
@@ -213,6 +213,6 @@ typedef struct {
 	CABAC_ctx c;
 	unsigned int CPB_size; // in bytes, 27 significant bits
 	unsigned int nal_unit_type:6;
-} Worker_ctx;
+};
 
 #endif

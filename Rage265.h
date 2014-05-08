@@ -9,15 +9,21 @@
 #include <stdint.h>
 
 enum Rage265_errors {
-	RAGE265_ERROR_NO_MEMORY         = 0x1,
-	RAGE265_ERROR_PARSING_BITSTREAM = 0x2,
+	RAGE265_ERROR_NO_MEMORY         = 0,
+	RAGE265_ERROR_PARSING_BITSTREAM = 1,
 };
 
+typedef struct Rage265_worker Rage265_worker;
+typedef struct {
+	unsigned int vps_max_sub_layers:3;
+	
+} Rage265_VPS;
 typedef struct {
 	unsigned int max_workers;
-	void *workers;
+	Rage265_worker *workers;
 	pthread_mutex_t lock;
 	pthread_cond_t worker_available;
+	Rage265_VPS v;
 } Rage265_ctx;
 
 size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n);
