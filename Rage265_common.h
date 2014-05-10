@@ -61,27 +61,34 @@ static inline long max(long a, long b) { return (a > b) ? a : b; }
 #define clz64 __builtin_clzll
 #endif
 
+static inline __attribute__((always_inline)) unsigned int get_ue8(const uint8_t *CPB, unsigned int *shift) {
+	uint16_t buf = (((CPB[*shift / 8] << 8) | CPB[*shift / 8 + 1]) << (*shift % 8));
+	unsigned int leadingZeroBits = __builtin_clz(buf | 0x0400) - WORD_BIT + 16;
+	*shift += 2 * leadingZeroBits + 1;
+	return (buf >> (16 - (2 * leadingZeroBits + 1))) - 1;
+}
+
+static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t *CPB, unsigned int *shift) {
+	unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
+	unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
+	uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
+	unsigned int leadingZeroBits = __builtin_clz(buf | 0x00010000) - WORD_BIT + 32;
+	*shift += 2 * leadingZeroBits + 1;
+	return (buf >> (32 - (2 * leadingZeroBits + 1))) - 1;
+}
+
+static unsigned int get_ue32(const uint8_t *CPB, unsigned int *shift) {
+	uint64_t msb = htobe64(((uint64_t *)CPB)[*shift / 64]);
+	uint64_t lsb = htobe64(((uint64_t *)CPB)[(*shift + 63) / 64]);
+	uint64_t buf = (msb << (*shift % 64)) | (lsb >> (-*shift % 64));
+	unsigned int leadingZeroBits = clz64(buf | 0x0000000100000000);
+	*shift += 2 * leadingZeroBits + 1;
+	return (buf >> (64 - (2 * leadingZeroBits + 1))) - 1;
+}
+
 static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
 	assert(upper<4294967295);
-	unsigned int leadingZeroBits, res;
-	if (upper <= 31) {
-		uint16_t buf = (((CPB[*shift / 8] << 8) | CPB[*shift / 8 + 1]) << (*shift % 8));
-		leadingZeroBits = __builtin_clz(buf | 0x0400) - WORD_BIT + 16;
-		res = (buf >> (16 - (2 * leadingZeroBits + 1))) - 1;
-	} else if (upper <= 65534) {
-		unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
-		unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
-		uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
-		leadingZeroBits = __builtin_clz(buf | 0x00010000) - WORD_BIT + 32;
-		res = (buf >> (32 - (2 * leadingZeroBits + 1))) - 1;
-	} else {
-		uint64_t msb = htobe64(((uint64_t *)CPB)[*shift / 64]);
-		uint64_t lsb = htobe64(((uint64_t *)CPB)[(*shift + 63) / 64]);
-		uint64_t buf = (msb << (*shift % 64)) | (lsb >> (-*shift % 64));
-		leadingZeroBits = clz64(buf | 0x0000000100000000);
-		res = (buf >> (64 - (2 * leadingZeroBits + 1))) - 1;
-	}
-	*shift += 2 * leadingZeroBits + 1;
+	unsigned int res = (upper <= 31) ? get_ue8(CPB, shift) : (upper <= 65534) ? get_ue16(CPB, shift) : get_ue32(CPB, shift);
 	return (res < upper) ? res : upper;
 }
 
