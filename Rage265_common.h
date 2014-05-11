@@ -18,7 +18,8 @@ static inline const char *red_if(int cond) { return (cond) ? " style=\"color: re
 #include <assert.h>
 #include <endian.h>
 #include <limits.h>
-#include <stdint.h>
+
+#include "Rage265.h"
 
 #ifndef WORD_BIT
 #define WORD_BIT (sizeof(int) * 8)
@@ -61,14 +62,14 @@ static inline long max(long a, long b) { return (a > b) ? a : b; }
 #define clz64 __builtin_clzll
 #endif
 
-static inline __attribute__((always_inline)) unsigned int get_ue8(const uint8_t *CPB, unsigned int *shift) {
+static inline __attribute__((always_inline)) unsigned int get_ue8(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	uint16_t buf = (((CPB[*shift / 8] << 8) | CPB[*shift / 8 + 1]) << (*shift % 8));
 	unsigned int leadingZeroBits = __builtin_clz(buf | 0x0400) - WORD_BIT + 16;
 	*shift += 2 * leadingZeroBits + 1;
 	return (buf >> (16 - (2 * leadingZeroBits + 1))) - 1;
 }
 
-static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t *CPB, unsigned int *shift) {
+static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
 	unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
 	uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
@@ -77,7 +78,7 @@ static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t
 	return (buf >> (32 - (2 * leadingZeroBits + 1))) - 1;
 }
 
-static unsigned int get_ue32(const uint8_t *CPB, unsigned int *shift) {
+static unsigned int get_ue32(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	uint64_t msb = htobe64(((uint64_t *)CPB)[*shift / 64]);
 	uint64_t lsb = htobe64(((uint64_t *)CPB)[(*shift + 63) / 64]);
 	uint64_t buf = (msb << (*shift % 64)) | (lsb >> (-*shift % 64));
@@ -86,13 +87,13 @@ static unsigned int get_ue32(const uint8_t *CPB, unsigned int *shift) {
 	return (buf >> (64 - (2 * leadingZeroBits + 1))) - 1;
 }
 
-static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
+static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t * restrict CPB, unsigned int * restrict shift, unsigned int upper) {
 	assert(upper<4294967295);
 	unsigned int res = (upper <= 31) ? get_ue8(CPB, shift) : (upper <= 65534) ? get_ue16(CPB, shift) : get_ue32(CPB, shift);
 	return (res < upper) ? res : upper;
 }
 
-static inline __attribute__((always_inline)) int get_se(const uint8_t *CPB, unsigned int *shift, int lower, int upper) {
+static inline __attribute__((always_inline)) int get_se(const uint8_t * restrict CPB, unsigned int * restrict shift, int lower, int upper) {
 	unsigned int codeNum = get_ue(CPB, shift, max(-lower * 2, upper * 2 - 1));
 	unsigned int abs = (codeNum+ 1) / 2;
 	unsigned int sign = (codeNum % 2) - 1;
@@ -100,7 +101,7 @@ static inline __attribute__((always_inline)) int get_se(const uint8_t *CPB, unsi
 	return (-lower * 2 < upper * 2 - 1) ? max(res, lower) : (-lower * 2 > upper * 2 - 1) ? min(res, upper) : res;
 }
 
-static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t *CPB, unsigned int *shift, unsigned int v) {
+static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t * restrict CPB, unsigned int * restrict shift, unsigned int v) {
 	unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
 	unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
 	uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
@@ -108,7 +109,7 @@ static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t *
 	return buf >> (32 - v);
 }
 
-static inline __attribute__((always_inline)) unsigned int get_u1(const uint8_t *CPB, unsigned int *shift) {
+static inline __attribute__((always_inline)) unsigned int get_u1(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	uint8_t buf = CPB[*shift / 8];
 	return (buf >> (7 - *shift++ % 8)) & 1;
 }

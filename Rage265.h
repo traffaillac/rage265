@@ -8,10 +8,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum Rage265_errors {
-	RAGE265_ERROR_NO_MEMORY          = 0,
-	RAGE265_ERROR_PARSING_BITSTREAM  = 1,
-	RAGE265_UNSUPPORTED_MULTIPLE_SPS = 2,
+enum Rage265_status {
+	RAGE265_ERROR_NO_MEMORY,
+	RAGE265_UNSUPPORTED_MULTIPLE_SPS,
+	RAGE265_UNSUPPORTED_MORE_THAN_FOUR_PPS,
 };
 
 typedef struct Rage265_worker Rage265_worker;
@@ -27,6 +27,8 @@ typedef struct {
 	unsigned int max_num_reorder_pics:4;
 	unsigned int MinCbLog2SizeY:3;
 	unsigned int CtbLog2SizeY:3;
+	unsigned int PicWidthInCtbsY:11;
+	unsigned int PicHeightInCtbsY:11;
 	unsigned int Log2MinTrafoSize:3;
 	unsigned int Log2MaxTrafoSize:3;
 	unsigned int max_transform_hierarchy_depth_inter:3;
@@ -40,12 +42,44 @@ typedef struct {
 	unsigned int pcm_loop_filter_disabled_flag:1;
 	unsigned int temporal_mvp_enabled_flag:1;
 	unsigned int strong_intra_smoothing_enabled_flag:1;
+	unsigned int dependent_slice_segments_enabled_flag:1;
+	unsigned int output_flag_present_flag:1;
+	unsigned int num_extra_slice_header_bits:3;
+	unsigned int sign_data_hiding_enabled_flag:1;
+	unsigned int cabac_init_present_flag:1;
+	unsigned int num_ref_idx_l0_active:4;
+	unsigned int num_ref_idx_l1_active:4;
+	unsigned int constrained_intra_pred_flag:1;
+	unsigned int transform_skip_enabled_flag:1;
+	unsigned int cu_qp_delta_enabled_flag:1;
+	unsigned int Log2MinCuQpDeltaSize:3;
+	int cb_qp_offset:5;
+	int cr_qp_offset:5;
+	unsigned int pps_slice_chroma_qp_offsets_present_flag:1;
+	unsigned int weighted_pred_flag:1;
+	unsigned int weighted_bipred_flag:1;
+	unsigned int transquant_bypass_enabled_flag:1;
+	unsigned int entropy_coding_sync_enabled_flag:1;
+	unsigned int num_tile_columns:5;
+	unsigned int num_tile_rows:5;
+	unsigned int loop_filter_across_tiles_enabled_flag:1;
+	unsigned int pps_loop_filter_across_slices_enabled_flag:1;
+	unsigned int deblocking_filter_override_enabled_flag:1;
+	unsigned int pps_deblocking_filter_disabled_flag:1;
+	int beta_offset:4;
+	int tc_offset:4;
+	unsigned int lists_modification_present_flag:1;
+	unsigned int Log2ParMrgLevel:3;
+	unsigned int slice_segment_header_extension_present_flag:1;
 	uint16_t pic_width_in_luma_samples; // 15 significant bits
 	uint16_t pic_height_in_luma_samples;
 	uint16_t conf_win_left_offset; // in luma samples
 	uint16_t conf_win_right_offset;
 	uint16_t conf_win_top_offset;
 	uint16_t conf_win_bottom_offset;
+	uint16_t colBd[23]; // 11 significant bits
+	uint16_t rowBd[21];
+	int8_t QP; // 7 significant bits
 } Rage265_parameter_set;
 typedef struct {
 	uint8_t *image;
@@ -60,10 +94,10 @@ typedef struct {
 	pthread_cond_t worker_available;
 	void *DPB;
 	Rage265_parameter_set SPS;
-	Rage265_parameter_set PPS[4];
+	Rage265_parameter_set PPSs[4];
 } Rage265_ctx;
 
 size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n);
-unsigned int Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len);
+const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len);
 
 #endif
