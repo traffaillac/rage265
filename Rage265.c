@@ -21,8 +21,87 @@
 
 
 
-static void parse_scaling_list_data(Rage265_worker *w) {
-	
+static const uint8_t intra_ScalingFactor[64] __attribute__((aligned)) = {
+	16, 16, 16, 16, 17, 18, 21, 24,
+	16, 16, 16, 16, 17, 19, 22, 25,
+	16, 16, 17, 18, 20, 22, 25, 29,
+	16, 16, 18, 21, 24, 27, 31, 36,
+	17, 17, 20, 24, 30, 35, 41, 47,
+	18, 19, 22, 27, 35, 44, 54, 65,
+	21, 22, 25, 31, 41, 54, 70, 88,
+	24, 25, 29, 36, 47, 65, 88, 115,
+};
+
+static const uint8_t inter_ScalingFactor[64] __attribute__((aligned)) = {
+	16, 16, 16, 16, 17, 18, 20, 24,
+	16, 16, 16, 17, 18, 20, 24, 25,
+	16, 16, 17, 18, 20, 24, 25, 28,
+	16, 17, 18, 20, 24, 25, 28, 33,
+	17, 18, 20, 24, 25, 28, 33, 41,
+	18, 20, 24, 25, 28, 33, 41, 54,
+	20, 24, 25, 28, 33, 41, 54, 71,
+	24, 25, 28, 33, 41, 54, 71, 91,
+};
+
+
+
+static void parse_AUD(Rage265_ctx *r, Rage265_worker *w) {
+	static const char * const pic_type_names[8] = {"I", "P, I", "B, P, I", [3 ... 7] = "unknown"};
+	unsigned int pic_type = *w->c.CPB >> 5;
+	printf("<li%s>pic_type: <code>%u (%s)</code></li>\n",
+		red_if(w->c.lim != 3), pic_type, pic_type_names[pic_type]);
+}
+
+
+
+static unsigned int parse_scaling_list_data(Rage265_parameter_set *p, const uint8_t *CPB, unsigned int shift) {
+	for (unsigned int matrixId = 0; matrixId < 6; matrixId++) {
+		printf("<li>ScalingList[0][%u]: <code>", matrixId);
+		unsigned int scaling_list_pred_mode_flag = get_u1(CPB, &shift);
+		if (!scaling_list_pred_mode_flag) {
+			unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
+			if (refMatrixId != matrixId)
+				memcpy(p->ScalingFactor4x4[matrixId], p->ScalingFactor4x4[refMatrixId], 16);
+			else
+				memset(p->ScalingFactor4x4[matrixId], 16, 16);
+			const char *str = (refMatrixId != matrixId) ? "ScalingList[0][%u]" : "default";
+			printf(str, refMatrixId);
+		} else for (unsigned int nextCoef = 8, i = 0; i < 16; i++) {
+			nextCoef = (nextCoef + get_se(CPB, &shift, -128, 127)) & 0xff;
+			p->ScalingFactor4x4[matrixId][ScanOrder4x4[0][i]] = nextCoef;
+			printf(" %u", nextCoef);
+		}
+		printf("</code></li>\n");
+	}
+	for (unsigned int sizeId = 0; sizeId < 3; sizeId++) {
+		unsigned int num = (sizeId == 2) ? 2 : 6;
+		for (unsigned int matrixId = 0; matrixId < num; matrixId++) {
+			printf("<li>ScalingList[%u][%u]: <code>", sizeId + 1, matrixId);
+			unsigned int scaling_list_pred_mode_flag = get_u1(CPB, &shift);
+			if (!scaling_list_pred_mode_flag) {
+				unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
+				memcpy((&p->ScalingFactor8x8)[sizeId][matrixId],
+					(refMatrixId != matrixId) ? (&p->ScalingFactor8x8)[sizeId][refMatrixId] :
+					(matrixId < num / 2) ? intra_ScalingFactor : inter_ScalingFactor, 64);
+				const char *str = (refMatrixId != matrixId) ? "ScalingList[%u][%u]" : "default";
+				printf(str, sizeId + 1, refMatrixId);
+			} else {
+				unsigned int nextCoef = 8;
+				if (sizeId > 0) {
+					nextCoef = 8 + get_se(CPB, &shift, -7, 247);
+					(sizeId == 1 ? p->ScalingFactor4x4[matrixId] : p->ScalingFactor8x8[matrixId])[0] = nextCoef;
+					printf("%u(DC)", nextCoef);
+				}
+				for (unsigned int i = 0; i < 64; i++) {
+					nextCoef = (nextCoef + get_se(CPB, &shift, -128, 127)) & 0xff;
+					(&p->ScalingFactor8x8)[sizeId][matrixId][ScanOrder8x8[0][i]] = nextCoef;
+					printf(" %u", nextCoef);
+				}
+			}
+			printf("</code></li>\n");
+		}
+	}
+	return shift;
 }
 
 
@@ -31,7 +110,7 @@ static void parse_scaling_list_data(Rage265_worker *w) {
  * This function parses the PPS into a copy of the current SPS, and stores it
  * if no error was detected.
  */
-void parse_PPS(Rage265_ctx *r, Rage265_worker *w) {
+static void parse_PPS(Rage265_ctx *r, Rage265_worker *w) {
 	Rage265_parameter_set p = r->SPS;
 	unsigned int shift = 0;
 	unsigned int pps_pic_parameter_set_id = get_ue(w->c.CPB, &shift, 63);
@@ -123,12 +202,12 @@ void parse_PPS(Rage265_ctx *r, Rage265_worker *w) {
 				p.rowBd[i] = i * p.PicHeightInCtbsY / p.num_tile_rows;
 		} else {
 			for (unsigned int i = 1; i < p.num_tile_columns; i++) {
-				unsigned int column_width = min(get_ue16(w->c.CPB, &shift) + 1, p.PicWidthInCtbsY - p.colBd[i - 1] - (p.num_tile_columns - i));
+				unsigned int column_width = min(get_ue32(w->c.CPB, &shift) + 1, p.PicWidthInCtbsY - p.colBd[i - 1] - (p.num_tile_columns - i));
 				p.colBd[i] = p.colBd[i - 1] + column_width;
 				printf("<li>column_width[%u]: <code>%u</code></li>\n", i - 1, column_width);
 			}
 			for (unsigned int i = 1; i < p.num_tile_rows; i++) {
-				unsigned int row_height = min(get_ue16(w->c.CPB, &shift) + 1, p.PicHeightInCtbsY - p.rowBd[i - 1] - (p.num_tile_rows - i));
+				unsigned int row_height = min(get_ue32(w->c.CPB, &shift) + 1, p.PicHeightInCtbsY - p.rowBd[i - 1] - (p.num_tile_rows - i));
 				p.rowBd[i] = p.rowBd[i - 1] + row_height;
 				printf("<li>row_height[%u]: <code>%u</code></li>\n", i - 1, row_height);
 			}
@@ -159,7 +238,7 @@ void parse_PPS(Rage265_ctx *r, Rage265_worker *w) {
 	}
 	unsigned int pps_scaling_list_data_present_flag = get_u1(w->c.CPB, &shift);
 	if (pps_scaling_list_data_present_flag)
-		parse_scaling_list_data(w);
+		shift = parse_scaling_list_data(&p, w->c.CPB, shift);
 	p.lists_modification_present_flag = get_u1(w->c.CPB, &shift);
 	p.Log2ParMrgLevel = min(get_ue8(w->c.CPB, &shift) + 2, p.CtbLog2SizeY);
 	p.slice_segment_header_extension_present_flag = get_u1(w->c.CPB, &shift);
@@ -182,20 +261,52 @@ void parse_PPS(Rage265_ctx *r, Rage265_worker *w) {
 
 
 
-static void parse_short_term_ref_pic_set(Rage265_worker *w) {
+static unsigned int parse_short_term_ref_pic_set(const uint8_t *CPB, unsigned int shift) {
 	
+	return shift;
 }
 
 
 
-static void parse_vui_parameters(Rage265_worker *w) {
+static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift) {
 	
+	return shift;
 }
 
 
 
-static void parse_profile_tier_level(Rage265_worker *w) {
+static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const uint8_t *c, unsigned int max_sub_layers) {
+	static const char * const general_profile_idc_names[32] = {"unknown", "Main",
+		"Main 10", "Main Still Picture", [4 ... 31] = "unknown"};
 	
+	p->general_profile_space = c[0] >> 6;
+	unsigned int general_tier_flag = (c[0] >> 5) & 1;
+	unsigned int general_profile_idc = c[0] & 0x1f;
+	p->general_progressive_source_flag = c[5] >> 7;
+	p->general_interlaced_source_flag = (c[5] >> 6) & 1;
+	unsigned int general_non_packed_constraint_flag = (c[5] >> 5) & 1;
+	unsigned int general_frame_only_constraint_flag = (c[5] >> 4) & 1;
+	unsigned int general_level_idc = c[11];
+	printf("<li%s>general_profile_space: <code>%u</code></li>\n"
+		"<li>general_tier_flag: <code>%x</code></li>\n"
+		"<li>general_profile_idc: <code>%u (%s profile)</code></li>\n"
+		"<li>general_progressive_source_flag: <code>%x</code></li>\n"
+		"<li>general_interlaced_source_flag: <code>%x</code></li>\n"
+		"<li>general_non_packed_constraint_flag: <code>%x</code></li>\n"
+		"<li>general_frame_only_constraint_flag: <code>%x</code></li>\n"
+		"<li>general_level_idc: <code>%f</code></li>\n",
+		red_if(p->general_profile_space > 0), p->general_profile_space,
+		general_tier_flag,
+		general_profile_idc, general_profile_idc_names[general_profile_idc],
+		p->general_progressive_source_flag,
+		p->general_interlaced_source_flag,
+		general_non_packed_constraint_flag,
+		general_frame_only_constraint_flag,
+		(float)general_level_idc / 30);
+	unsigned int sub_layer_flags = (c[12] << 8) | c[13];
+	/* Sub-layer selection must occur at the demux level, hence any such info is ignored. */
+	return c + 14 + 11 * __builtin_popcount(sub_layer_flags & 0xaaa0) +
+		__builtin_popcount(sub_layer_flags & 0x5550);
 }
 
 
@@ -207,11 +318,10 @@ static void parse_profile_tier_level(Rage265_worker *w) {
 static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 	static const char * const chroma_format_idc_names[4] = {"4:0:0", "4:2:0", "4:2:2", "4:4:4"};
 	
-	Rage265_parameter_set s = {
-		.num_tile_columns = 1,
-		.num_tile_rows = 1,
-		.loop_filter_across_tiles_enabled_flag = 1,
-	};
+	Rage265_parameter_set s = {0};
+	s.num_tile_columns = 1;
+	s.num_tile_rows = 1;
+	s.loop_filter_across_tiles_enabled_flag = 1;
 	unsigned int sps_video_parameter_set_id = w->c.CPB[0] >> 4;
 	s.max_sub_layers = min((w->c.CPB[0] >> 1) & 0x7, 6) + 1;
 	s.temporal_id_nesting_flag = w->c.CPB[0] & 1;
@@ -221,8 +331,7 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 		sps_video_parameter_set_id,
 		s.max_sub_layers,
 		s.temporal_id_nesting_flag);
-	unsigned int shift = 8;
-	parse_profile_tier_level(w);
+	unsigned int shift = 8 * (parse_profile_tier_level(&s, w->c.CPB + 1, s.max_sub_layers) - w->c.CPB);
 	unsigned int sps_seq_parameter_set_id = get_ue(w->c.CPB, &shift, 15);
 	s.ChromaArrayType = get_ue(w->c.CPB, &shift, 3);
 	printf("<li%s>sps_seq_parameter_set_id: <code>%u</code></li>\n"
@@ -245,10 +354,10 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 	if (conformance_window_flag) {
 		unsigned int shiftX = (s.ChromaArrayType == 1 || s.ChromaArrayType == 2);
 		unsigned int shiftY = (s.ChromaArrayType == 1);
-		s.conf_win_left_offset = min(get_ue16(w->c.CPB, &shift) << shiftX, s.pic_width_in_luma_samples);
-		s.conf_win_right_offset = min(get_ue16(w->c.CPB, &shift) << shiftX, s.pic_width_in_luma_samples - s.conf_win_left_offset);
-		s.conf_win_top_offset = min(get_ue16(w->c.CPB, &shift) << shiftY, s.pic_height_in_luma_samples);
-		s.conf_win_bottom_offset = min(get_ue16(w->c.CPB, &shift) << shiftY, s.pic_height_in_luma_samples - s.conf_win_top_offset);
+		s.conf_win_left_offset = min(get_ue32(w->c.CPB, &shift) << shiftX, s.pic_width_in_luma_samples);
+		s.conf_win_right_offset = min(get_ue32(w->c.CPB, &shift) << shiftX, s.pic_width_in_luma_samples - s.conf_win_left_offset);
+		s.conf_win_top_offset = min(get_ue32(w->c.CPB, &shift) << shiftY, s.pic_height_in_luma_samples);
+		s.conf_win_bottom_offset = min(get_ue32(w->c.CPB, &shift) << shiftY, s.pic_height_in_luma_samples - s.conf_win_top_offset);
 		printf("<li>conf_win_left_offset: <code>%u</code></li>\n"
 			"<li>conf_win_right_offset: <code>%u</code></li>\n"
 			"<li>conf_win_top_offset: <code>%u</code></li>\n"
@@ -306,8 +415,23 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 		scaling_list_enabled_flag);
 	if (scaling_list_enabled_flag) {
 		unsigned int sps_scaling_list_data_present_flag = get_u1(w->c.CPB, &shift);
-		if (sps_scaling_list_data_present_flag)
-			parse_scaling_list_data(w);
+		if (!sps_scaling_list_data_present_flag) {
+			memset(s.ScalingFactor4x4, 16, sizeof(s.ScalingFactor4x4));
+			for (unsigned int sizeId = 0; sizeId < 3; sizeId++) {
+				unsigned int num = (sizeId == 2) ? 2 : 6;
+				for (unsigned int matrixId = 0; matrixId < num; matrixId++) {
+					memcpy(&(s.ScalingFactor8x8)[sizeId][matrixId], (matrixId < num / 2) ?
+						intra_ScalingFactor : inter_ScalingFactor, 64);
+				}
+			}
+		} else {
+			shift = parse_scaling_list_data(&s, w->c.CPB, shift);
+		}
+	} else {
+		memset(s.ScalingFactor4x4, 1, sizeof(s.ScalingFactor4x4));
+		memset(s.ScalingFactor8x8, 1, sizeof(s.ScalingFactor8x8));
+		memset(s.ScalingFactor16x16, 1, sizeof(s.ScalingFactor16x16));
+		memset(s.ScalingFactor32x32, 1, sizeof(s.ScalingFactor32x32));
 	}
 	s.amp_enabled_flag = get_u1(w->c.CPB, &shift);
 	s.sample_adaptive_offset_enabled_flag = get_u1(w->c.CPB, &shift);
@@ -340,7 +464,7 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 	printf("<li>num_short_term_ref_pic_sets: <code>%u</code></li>\n",
 		num_short_term_ref_pic_sets);
 	for (unsigned int i = 0; i < num_short_term_ref_pic_sets; i++)
-		parse_short_term_ref_pic_set(w);
+		shift = parse_short_term_ref_pic_set(w->c.CPB, shift);
 	unsigned int long_term_ref_pics_present_flag = get_u1(w->c.CPB, &shift);
 	printf("<li>long_term_ref_pics_present_flag: <code>%x</code></li>\n",
 		long_term_ref_pics_present_flag);
@@ -367,7 +491,7 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 		s.temporal_mvp_enabled_flag,
 		s.strong_intra_smoothing_enabled_flag);
 	if (vui_parameters_present_flag)
-		parse_vui_parameters(w);
+		shift = parse_vui_parameters(w->c.CPB, shift);
 	unsigned int sps_extension_flag = get_u1(w->c.CPB, &shift);
 	printf("<li>sps_extension_flag: <code>%x</code></li>\n", sps_extension_flag);
 	if (sps_extension_flag && shift < w->c.lim)
@@ -407,7 +531,7 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 		size_t picture_size = sizeof(Rage265_picture) + luma_size + 2 * chroma_size;
 		if (r->DPB != NULL)
 			free(r->DPB);
-		r->DPB = calloc(picture_size * (s.max_dec_pic_buffering - 1 + r->max_workers));
+		r->DPB = calloc(s.max_dec_pic_buffering - 1 + r->max_workers, picture_size);
 		for (unsigned int i = 0; i < s.max_dec_pic_buffering - 1 + r->max_workers; i++) {
 			Rage265_picture *p = r->DPB + i * picture_size;
 			p->image = (uint8_t *)p + sizeof(*p);
@@ -421,8 +545,9 @@ static void parse_SPS(Rage265_ctx *r, Rage265_worker *w) {
 
 
 
-static void parse_hrd_parameters(Rage265_worker *w, unsigned int cprms_present_flag, unsigned int max_sub_layers) {
+static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift, unsigned int cprms_present_flag, unsigned int max_sub_layers) {
 	
+	return shift;
 }
 
 
@@ -444,8 +569,8 @@ static void parse_VPS(Rage265_ctx *r, Rage265_worker *w) {
 		vps_max_layers,
 		vps_max_sub_layers,
 		vps_temporal_id_nesting_flag);
-	unsigned int shift = 32;
-	parse_profile_tier_level(w);
+	Rage265_parameter_set v;
+	unsigned int shift = 8 * (parse_profile_tier_level(&v, w->c.CPB + 32, vps_max_sub_layers) - w->c.CPB);
 	unsigned int vps_sub_layer_ordering_info_present_flag = get_u1(w->c.CPB, &shift);
 	for (unsigned int i = (vps_max_sub_layers - 1) & -vps_sub_layer_ordering_info_present_flag; i < vps_max_sub_layers; i++) {
 		unsigned int vps_max_dec_pic_buffering = get_ue(w->c.CPB, &shift, 15) + 1;
@@ -500,7 +625,7 @@ static void parse_VPS(Rage265_ctx *r, Rage265_worker *w) {
 			unsigned int cprms_present_flag = 0;
 			if (i > 0)
 				cprms_present_flag = get_u1(w->c.CPB, &shift);
-			parse_hrd_parameters(w, cprms_present_flag, vps_max_sub_layers);
+			shift = parse_hrd_parameters(w->c.CPB, shift, cprms_present_flag, vps_max_sub_layers);
 			printf("</ul>\n");
 		}
 	}
@@ -575,6 +700,8 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 	static const Parser parse_nal_unit[64] = {
 		[32] = parse_VPS,
 		[33] = parse_SPS,
+		[34] = parse_PPS,
+		[35] = parse_AUD,
 	};
 	
 	/* On first call, initialise the main structure. */

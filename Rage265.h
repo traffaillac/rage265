@@ -18,6 +18,9 @@ typedef struct Rage265_worker Rage265_worker;
 typedef struct {
 	unsigned int max_sub_layers:3;
 	unsigned int temporal_id_nesting_flag:1;
+	unsigned int general_profile_space:2;
+	unsigned int general_progressive_source_flag:1;
+	unsigned int general_interlaced_source_flag:1;
 	unsigned int ChromaArrayType:2;
 	unsigned int separate_colour_plane_flag:1;
 	unsigned int BitDepth_Y:4;
@@ -80,6 +83,10 @@ typedef struct {
 	uint16_t colBd[23]; // 11 significant bits
 	uint16_t rowBd[21];
 	int8_t QP; // 7 significant bits
+	uint8_t ScalingFactor4x4[6][16] __attribute__((aligned));
+	uint8_t ScalingFactor8x8[6][64] __attribute__((aligned));
+	uint8_t ScalingFactor16x16[6][64] __attribute__((aligned));
+	uint8_t ScalingFactor32x32[2][64] __attribute__((aligned));
 } Rage265_parameter_set;
 typedef struct {
 	uint8_t *image;

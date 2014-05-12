@@ -69,7 +69,7 @@ static inline __attribute__((always_inline)) unsigned int get_ue8(const uint8_t 
 	return (buf >> (16 - (2 * leadingZeroBits + 1))) - 1;
 }
 
-static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t * restrict CPB, unsigned int * restrict shift) {
+static inline __attribute__((always_inline)) unsigned int get_ue32(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	unsigned int msb = htobe32(((uint32_t *)CPB)[*shift / 32]);
 	unsigned int lsb = htobe32(((uint32_t *)CPB)[(*shift + 31) / 32]);
 	uint32_t buf = (msb << (*shift % 32)) | (lsb >> (-*shift % 32));
@@ -78,7 +78,7 @@ static inline __attribute__((always_inline)) unsigned int get_ue16(const uint8_t
 	return (buf >> (32 - (2 * leadingZeroBits + 1))) - 1;
 }
 
-static unsigned int get_ue32(const uint8_t * restrict CPB, unsigned int * restrict shift) {
+static unsigned int get_ue64(const uint8_t * restrict CPB, unsigned int * restrict shift) {
 	uint64_t msb = htobe64(((uint64_t *)CPB)[*shift / 64]);
 	uint64_t lsb = htobe64(((uint64_t *)CPB)[(*shift + 63) / 64]);
 	uint64_t buf = (msb << (*shift % 64)) | (lsb >> (-*shift % 64));
@@ -89,7 +89,7 @@ static unsigned int get_ue32(const uint8_t * restrict CPB, unsigned int * restri
 
 static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t * restrict CPB, unsigned int * restrict shift, unsigned int upper) {
 	assert(upper<4294967295);
-	unsigned int res = (upper <= 31) ? get_ue8(CPB, shift) : (upper <= 65534) ? get_ue16(CPB, shift) : get_ue32(CPB, shift);
+	unsigned int res = (upper <= 31) ? get_ue8(CPB, shift) : (upper <= 65534) ? get_ue32(CPB, shift) : get_ue64(CPB, shift);
 	return (res < upper) ? res : upper;
 }
 
@@ -209,6 +209,29 @@ static inline unsigned int get_bypass(CABAC_ctx *c) {
 	c->ivlOffset -= c->ivlCurrRange & mask;
 	return -mask;
 }
+
+
+
+static const uint8_t ScanOrder4x4[3][16] = {
+	{0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15},
+	{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+	{0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15},
+};
+
+static const uint8_t ScanOrder8x8[3][64] = {
+	{0, 8, 1, 16, 9, 2, 24, 17, 10, 3, 32, 25, 18, 11, 4, 40, 33, 26, 19, 12, 5,
+	48, 41, 34, 27, 20, 13, 6, 56, 49, 42, 35, 28, 21, 14, 7, 57, 50, 43, 36, 29,
+	22, 15, 58, 51, 44, 37, 30, 23, 59, 52, 45, 38, 31, 60, 53, 46, 39, 61, 54,
+	47, 62, 55, 63},
+	{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+	40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+	59, 60, 61, 62, 63},
+	{0, 8, 16, 24, 32, 40, 48, 56, 1, 9, 17, 25, 33, 41, 49, 57, 2, 10, 18, 26,
+	34, 42, 50, 58, 3, 11, 19, 27, 35, 43, 51, 59, 4, 12, 20, 28, 36, 44, 52, 60,
+	5, 13, 21, 29, 37, 45, 53, 61, 6, 14, 22, 30, 38, 46, 54, 62, 7, 15, 23, 31,
+	39, 47, 55, 63},
+};
 
 
 
