@@ -4,7 +4,6 @@
 #ifndef RAGE265_H
 #define RAGE265_H
 
-#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -12,6 +11,7 @@ enum Rage265_status {
 	RAGE265_ERROR_NO_MEMORY,
 	RAGE265_UNSUPPORTED_MULTIPLE_SPS,
 	RAGE265_UNSUPPORTED_MORE_THAN_FOUR_PPS,
+	RAGE265_UNSUPPORTED_DEPENDENT_SLICES,
 };
 
 typedef struct Rage265_worker Rage265_worker;
@@ -66,7 +66,7 @@ typedef struct {
 	unsigned int num_tile_columns:5;
 	unsigned int num_tile_rows:5;
 	unsigned int loop_filter_across_tiles_enabled_flag:1;
-	unsigned int pps_loop_filter_across_slices_enabled_flag:1;
+	unsigned int loop_filter_across_slices_enabled_flag:1;
 	unsigned int deblocking_filter_override_enabled_flag:1;
 	unsigned int pps_deblocking_filter_disabled_flag:1;
 	int beta_offset:4;
@@ -92,14 +92,14 @@ typedef struct {
 	uint8_t *image;
 	unsigned int used_for_reference:1;
 	unsigned int long_term_flag:1;
-	int32_t PictureOrderCnt;
+	int32_t PicOrderCntVal;
 } Rage265_picture;
 typedef struct {
-	unsigned int max_workers;
-	Rage265_worker *workers;
-	pthread_mutex_t lock;
-	pthread_cond_t worker_available;
-	void *DPB;
+	const uint8_t *CPB;
+	unsigned int CPB_size; // in bytes, 27 significant bits
+	unsigned int nal_unit_type:6;
+	int32_t prevPicOrderCntVal;
+	Rage265_picture *DPB;
 	Rage265_parameter_set SPS;
 	Rage265_parameter_set PPSs[4];
 } Rage265_ctx;

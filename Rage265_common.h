@@ -235,15 +235,13 @@ static const uint8_t ScanOrder8x8[3][64] = {
 
 
 
-struct Rage265_worker {
-	pthread_t thread_id;
-	pthread_mutex_t *lock;
-	pthread_cond_t target_changed;
-	pthread_cond_t *target_complete;
-	uint8_t *target;
+struct Rage265_slice {
+	Rage265_parameter_set p;
+	unsigned int ctb_x:11;
+	unsigned int ctb_y:11;
+	unsigned int slice_type:2;
+	unsigned int colour_plane_id:2;
 	CABAC_ctx c;
-	unsigned int CPB_size; // in bytes, 27 significant bits
-	unsigned int nal_unit_type:6;
 };
 
 #endif
