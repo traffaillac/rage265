@@ -22,10 +22,16 @@ static inline const char *red_if(int cond) { return (cond) ? " style=\"color: re
 #include "Rage265.h"
 
 #ifndef WORD_BIT
-#define WORD_BIT (sizeof(int) * 8)
+#if INT_MAX == 2147483647
+#define WORD_BIT 32
+#endif
 #endif
 #ifndef LONG_BIT
-#define LONG_BIT (sizeof(long) * 8)
+#if LONG_MAX == 2147483647
+#define LONG_BIT 32
+#elif LONG_MAX == 9223372036854775807
+#define LONG_BIT 64
+#endif
 #endif
 
 #ifdef __SSSE3__

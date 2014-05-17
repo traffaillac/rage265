@@ -19,7 +19,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <sys/sysinfo.h>
 
 
 
@@ -47,8 +46,74 @@ static const uint8_t inter_ScalingFactor[64] __attribute__((aligned)) = {
 
 
 
-static unsigned int parse_short_term_ref_pic_set(const uint8_t *CPB, unsigned int shift) {
-	
+/**
+ * This function parses a single short_term_ref_pic_set(), fills the proper
+ * st_RPS entry, and returns the last shift value.
+ */
+static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_rps)[16],
+	unsigned int stRpsIdx, const uint8_t *CPB, unsigned int shift,
+	unsigned int num_short_term_ref_pic_sets, const Rage265_parameter_set *p)
+{
+	unsigned int inter_ref_pic_set_prediction_flag = 0;
+	if (stRpsIdx > 0)
+		inter_ref_pic_set_prediction_flag = get_u1(CPB, &shift);
+	if (inter_ref_pic_set_prediction_flag) {
+		unsigned int RefRpsIdx = stRpsIdx - 1;
+		if (stRpsIdx == num_short_term_ref_pic_sets)
+			RefRpsIdx -= min(get_ue32(CPB, &shift), RefRpsIdx);
+		unsigned int NumNegativePics = st_RPS[RefRpsIdx][15] & 0xff;
+		unsigned int NumDeltaPocs = st_RPS[RefRpsIdx][15] >> 8;
+		unsigned int delta_rps_sign = get_u1(CPB, &shift);
+		unsigned int abs_delta_rps = get_ue(CPB, &shift, 32767) + 1;
+		int deltaRps = (abs_delta_rps ^ -delta_rps_sign) + delta_rps_sign;
+		unsigned int used_by_curr_pic_flags = 0;
+		unsigned int use_delta_flags = 0x1fffe;
+		for (unsigned int j = 0; j <= NumDeltaPocs; j++) {
+			unsigned int reorder = (j < NumNegativePics) ? NumNegativePics - j :
+				(j < NumDeltaPocs) ? j + 2 : (NumNegativePics + 1);
+			unsigned int used_by_curr_pic_flag = get_u1(CPB, &shift);
+			used_by_curr_pic_flags |= used_by_curr_pic_flag << reorder;
+			if (!used_by_curr_pic_flag)
+				use_delta_flags ^= (get_u1(CPB, &shift) ^ 1) << reorder;
+		}
+		unsigned int i = 0, k = 0;
+		for (unsigned int j = 0; j <= NumDeltaPocs; j++) {
+			int dPoc = deltaRps;
+			if (j < NumNegativePics)
+				dPoc -= (st_RPS[RefRpsIdx][j] >> 1) + 1;
+			else if (j > NumNegativePics)
+				dPoc += (st_RPS[RefRpsIdx][j - 1] >> 1) + 1;
+			if (((use_delta_flags >>= 1) & 1) && dPoc != 0) {
+				st_RPS[stRpsIdx][i++] = (min(abs(dPoc) - 1, 32767) << 1) |
+					((used_by_curr_pic_flags >>= 1) & 1);
+				if (dPoc < 0)
+					k = i;
+			}
+		}
+		st_RPS[stRpsIdx][15] = (i << 8) | k;
+	} else {
+		unsigned int num_negative_pics = min(get_ue8(CPB, &shift),
+			p->max_dec_pic_buffering - 1);
+		unsigned int NumDeltaPocs = min(num_negative_pics + get_ue8(CPB, &shift),
+			p->max_dec_pic_buffering - 1);
+		st_RPS[stRpsIdx][15] = (NumDeltaPocs << 8) | num_negative_pics;
+		int delta_poc_minus1 = -1;
+		for (unsigned int i = 0; i < NumDeltaPocs; i++) {
+			if (i == num_negative_pics)
+				delta_poc_minus1 = -1;
+			delta_poc_minus1 = min(delta_poc_minus1 + get_ue32(CPB, &shift) + 1, 32767);
+			unsigned int used_by_curr_pic_flag = get_u1(CPB, &shift);
+			unsigned int j = (i < num_negative_pics) ? num_negative_pics - i - 1 : i;
+			st_RPS[stRpsIdx][j] = (delta_poc_minus1 << 1) | used_by_curr_pic_flag;
+		}
+	}
+	printf("<ul>\n");
+	for (unsigned int i = 0; i < st_RPS[stRpsIdx][15] >> 8; i++) {
+		unsigned int abs_delta_poc = (st_RPS[stRpsIdx][i] >> 1) + 1;
+		printf("<li>DeltaPoc[%u][%u]: <code>%d, %s</code></li>\n",
+			stRpsIdx, i, (i < st_RPS[stRpsIdx][15] & 0xff) ? -abs_delta_poc : abs_delta_poc, (st_RPS[stRpsIdx][i] & 1) ? "used" : "follow");
+	}
+	printf("</ul>\n");
 	return shift;
 }
 
@@ -122,10 +187,17 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 				PicOrderCntVal -= MaxPicOrderCntLsb;
 			printf("<li>PicOrderCntVal: <code>%d</code></li>\n", PicOrderCntVal);
 			unsigned int short_term_ref_pic_set_sps_flag = get_u1(r->CPB, &shift);
+			printf("<li>short_term_ref_pic_set_sps_flag: <code>%x</code></li>\n",
+				short_term_ref_pic_set_sps_flag);
+			unsigned int short_term_ref_pic_set_idx = 0;
 			if (!short_term_ref_pic_set_sps_flag) {
-				shift = parse_short_term_ref_pic_set(r->CPB, shift);
+				short_term_ref_pic_set_idx = s.p.num_short_term_ref_pic_sets;
+				shift = parse_short_term_ref_pic_set(r->short_term_RPS, short_term_ref_pic_set_idx, r->CPB, shift, short_term_ref_pic_set_idx, &s.p);
 			} else if (s.p.num_short_term_ref_pic_sets > 1) {
-				unsigned int short_term_ref_pic_set_idx = get_uv(r->CPB, &shift, );
+				short_term_ref_pic_set_idx = get_uv(r->CPB, &shift,
+					WORD_BIT - __builtin_clz(s.p.num_short_term_ref_pic_sets - 1));
+				printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
+					short_term_ref_pic_set_idx);
 			}
 			if (s.p.long_term_ref_pics_present_flag) {
 				if (s.p.num_long_term_ref_pics_sps > 0) {
@@ -633,11 +705,14 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 			s.Log2MaxIpcmCbSizeY,
 			s.pcm_loop_filter_disabled_flag);
 	}
-	unsigned int num_short_term_ref_pic_sets = get_ue(r->CPB, &shift, 64);
+	s.num_short_term_ref_pic_sets = get_ue(r->CPB, &shift, 64);
 	printf("<li>num_short_term_ref_pic_sets: <code>%u</code></li>\n",
-		num_short_term_ref_pic_sets);
-	for (unsigned int i = 0; i < num_short_term_ref_pic_sets; i++)
-		shift = parse_short_term_ref_pic_set(r->CPB, shift);
+		s.num_short_term_ref_pic_sets);
+	uint16_t short_term_RPS[s.num_short_term_ref_pic_sets][16];
+	for (unsigned int i = 0; i < s.num_short_term_ref_pic_sets; i++) {
+		shift = parse_short_term_ref_pic_set(short_term_RPSs, i, r->CPB, shift,
+			s.num_short_term_ref_pic_sets, s.max_dec_buffering);
+	}
 	unsigned int long_term_ref_pics_present_flag = get_u1(r->CPB, &shift);
 	printf("<li>long_term_ref_pics_present_flag: <code>%x</code></li>\n",
 		long_term_ref_pics_present_flag);
@@ -673,7 +748,7 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 		printf("<li style=\"color: red\">Bitstream overflow (%d bits)</li>\n", shift - lim);
 	
 	/* Clear the r->CPB and reallocate the DPB when the image format changes. */
-	if (shift != lim || sps_seq_parameter_set_id > 0)
+	if (shift != lim || sps_seq_parameter_set_id > 0 || s.general_profile_space > 0)
 		return;
 	if ((s.ChromaArrayType ^ r->SPS.ChromaArrayType) |
 		(s.pic_width_in_luma_samples ^ r->SPS.pic_width_in_luma_samples) |
@@ -704,6 +779,7 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 		memset(r->PPSs, 0, sizeof(r->PPSs));
 	}
 	r->SPS = s;
+	memcpy(r->short_term_RPSs, short_term_RPSs, sizeof(short_term_RPSs));
 }
 
 

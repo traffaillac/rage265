@@ -43,6 +43,7 @@ typedef struct {
 	unsigned int Log2MinIpcmCbSizeY:3;
 	unsigned int Log2MaxIpcmCbSizeY:3;
 	unsigned int pcm_loop_filter_disabled_flag:1;
+	unsigned int num_short_term_ref_pic_sets:7;
 	unsigned int temporal_mvp_enabled_flag:1;
 	unsigned int strong_intra_smoothing_enabled_flag:1;
 	unsigned int dependent_slice_segments_enabled_flag:1;
@@ -102,6 +103,9 @@ typedef struct {
 	Rage265_picture *DPB;
 	Rage265_parameter_set SPS;
 	Rage265_parameter_set PPSs[4];
+	uint16_t short_term_RPSs[64][16]; // [15] = NumDeltaPocs << 8 | NumNegativePics,
+		// [0..14] = abs_delta_poc_minus1 << 1 | used_by_curr_pic_flag,
+		// sorted by ascending values of DeltaPoc (not abs_delta_poc as in spec!).
 } Rage265_ctx;
 
 size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n);
