@@ -152,9 +152,10 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 		}
 		unsigned int last_ctb = s.p.PicWidthInCtbsY * s.p.PicHeightInCtbsY - 1;
 		if (last_ctb > 0) {
-			unsigned int slice_segment_address = get_uv(r->CPB, &shift, WORD_BIT - __builtin_clz(last_ctb));
+			unsigned int slice_segment_address = min(get_uv(r->CPB, &shift,
+				WORD_BIT - __builtin_clz(last_ctb)), last_ctb);
 			s.ctb_x = slice_segment_address % s.p.PicWidthInCtbsY;
-			s.ctb_y = min(slice_segment_address / s.p.PicWidthInCtbsY, s.p.PicHeightInCtbsY);
+			s.ctb_y = slice_segment_address / s.p.PicWidthInCtbsY;
 			printf("<li>slice_segment_address: <code>%u</code></li>\n",
 				slice_segment_address);
 		}
@@ -176,6 +177,8 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 		}
 		int PicOrderCntVal = 0;
 		if (r->nal_unit_type != 19 && r->nal_unit_type != 20) {
+			
+			/* 8.3.1 Decoding process for picture order count */
 			unsigned int slice_pic_order_cnt_lsb = get_uv(r->CPB, &shift,
 				s.p.log2_max_pic_order_cnt_lsb);
 			int MaxPicOrderCntLsb = 1 << s.p.log2_max_pic_order_cnt_lsb;
@@ -186,37 +189,65 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 			if (PicOrderCntVal - r->prevPicOrderCntVal > MaxPicOrderCntLsb / 2)
 				PicOrderCntVal -= MaxPicOrderCntLsb;
 			printf("<li>PicOrderCntVal: <code>%d</code></li>\n", PicOrderCntVal);
+			
+			/* 8.3.2 Decoding process for reference picture set */
 			unsigned int short_term_ref_pic_set_sps_flag = get_u1(r->CPB, &shift);
 			printf("<li>short_term_ref_pic_set_sps_flag: <code>%x</code></li>\n",
 				short_term_ref_pic_set_sps_flag);
 			unsigned int short_term_ref_pic_set_idx = 0;
 			if (!short_term_ref_pic_set_sps_flag) {
 				short_term_ref_pic_set_idx = s.p.num_short_term_ref_pic_sets;
-				shift = parse_short_term_ref_pic_set(r->short_term_RPS, short_term_ref_pic_set_idx, r->CPB, shift, short_term_ref_pic_set_idx, &s.p);
+				shift = parse_short_term_ref_pic_set(r->short_term_RPS,
+					short_term_ref_pic_set_idx, r->CPB, shift,
+					short_term_ref_pic_set_idx, &s.p);
 			} else if (s.p.num_short_term_ref_pic_sets > 1) {
-				short_term_ref_pic_set_idx = get_uv(r->CPB, &shift,
-					WORD_BIT - __builtin_clz(s.p.num_short_term_ref_pic_sets - 1));
+				short_term_ref_pic_set_idx = min(get_uv(r->CPB, &shift,
+					WORD_BIT - __builtin_clz(s.p.num_short_term_ref_pic_sets - 1)),
+					s.p.num_short_term_ref_pic_sets);
 				printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
 					short_term_ref_pic_set_idx);
 			}
+			const uint16_t *st_RPS = r->short_term_RPS[short_term_ref_pic_set_idx];
+			
 			if (s.p.long_term_ref_pics_present_flag) {
+				unsigned int num_long_term_sps = 0;
 				if (s.p.num_long_term_ref_pics_sps > 0) {
-					unsigned int num_long_term_sps = get_ue(r->CPB, &shift, );
+					num_long_term_sps = min(get_ue8(r->CPB, &shift),
+						min(s.p.num_long_term_ref_pics_sps,
+						s.p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8)));
+					printf("<li>num_long_term_sps: <code>%u</code></li>\n",
+						num_long_term_sps);
 				}
-				unsigned int num_long_term_pics = get_ue(r->CPB, &shift, );
+				unsigned int num_long_term_pics = min(get_ue8(r->CPB, &shift,
+					s.p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8) - num_long_term_sps));
+				printf("<li>num_long_term_pics: <code>%u</code></li>\n",
+					num_long_term_pics);
+				unsigned int DeltaPocMsbCycleLt = 0;
 				for (unsigned int i = 0; i < num_long_term_sps + num_long_term_pics; i++) {
+					unsigned int pocLt, used_by_curr_pic_lt_flag;
 					if (i < num_long_term_sps) {
-						if (num_long_term_ref_pics_sps > 1) {
-							unsigned int lt_idx_sps = get_uv(r->CPB, &shift, );
+						unsigned int lt_idx_sps = 0;
+						if (s.p.num_long_term_ref_pics_sps > 1) {
+							unsigned int lt_idx_sps = min(get_uv(r->CPB, &shift,
+								WORD_BIT - __builtin_clz(s.p.num_long_term_ref_pics_sps - 1)),
+								s.p.num_long_term_ref_pics_sps - 1);
 						}
+						pocLt = s.p.lt_ref_pic_poc_lsb_sps[lt_idx_sps];
+						used_by_curr_pic_lt_flag = (s.p.used_by_curr_pic_lt_sps_flags >> i) & 1;
 					} else {
-						unsigned int poc_lsb_lt = get_uv(r->CPB, &shift, );
-						unsigned int used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
+						if (i == num_long_term_sps)
+							DeltaPocMsbCycleLt = 0;
+						pocLt = get_uv(r->CPB, &shift, s.p.log2_max_pic_order_cnt_lsb);
+						used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
 					}
 					unsigned int delta_poc_msb_present_flag = get_u1(r->CPB, &shift);
 					if (delta_poc_msb_present_flag) {
-						unsigned int delta_poc_msb_cycle_lt = get_ue(r->CPB, &shift, );
+						DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
+						pocLt += (PicOrderCntVal & -MaxPicOrderCntMsb) -
+							(DeltaPocMsbCycleLt << s.p.log2_max_pic_order_cnt_msb);
 					}
+					printf("<li>pocLt[%u]: <code>%u, %s</code></li>\n",
+						i, pocLt, used_by_curr_pic_lt_flag ? "used" : "follow");
 				}
 			}
 			if (s.p.temporal_mvp_enabled_flag)
@@ -713,22 +744,22 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 		shift = parse_short_term_ref_pic_set(short_term_RPSs, i, r->CPB, shift,
 			s.num_short_term_ref_pic_sets, s.max_dec_buffering);
 	}
-	unsigned int long_term_ref_pics_present_flag = get_u1(r->CPB, &shift);
+	s.long_term_ref_pics_present_flag = get_u1(r->CPB, &shift);
 	printf("<li>long_term_ref_pics_present_flag: <code>%x</code></li>\n",
-		long_term_ref_pics_present_flag);
-	if (long_term_ref_pics_present_flag) {
-		unsigned int num_long_term_ref_pics_sps = get_ue(r->CPB, &shift, 32);
+		s.long_term_ref_pics_present_flag);
+	if (s.long_term_ref_pics_present_flag) {
+		s.num_long_term_ref_pics_sps = get_ue(r->CPB, &shift, 32);
 		printf("<li>num_long_term_ref_pics_sps: <code>%u</code></li>\n",
-			num_long_term_ref_pics_sps);
-		for (unsigned int i = 0; i < num_long_term_ref_pics_sps; i++) {
-			unsigned int lt_ref_pic_poc_lsb_sps = get_uv(r->CPB, &shift, s.log2_max_pic_order_cnt_lsb);
-			unsigned int used_by_curr_pic_lt_sps_flag = get_u1(r->CPB, &shift);
+			s.num_long_term_ref_pics_sps);
+		for (unsigned int i = 0; i < s.num_long_term_ref_pics_sps; i++) {
+			s.lt_ref_pic_poc_lsb_sps[i] = get_uv(r->CPB, &shift, s.log2_max_pic_order_cnt_lsb);
+			s.used_by_curr_pic_lt_sps_flags |= get_u1(r->CPB, &shift) << i;
 			printf("<ul>\n"
 				"<li>lt_ref_pic_poc_lsb_sps[%u]: <code>%u</code></li>\n"
 				"<li>used_by_curr_pic_lt_sps_flag[%u]: <code>%u</code></li>\n"
 				"</ul>\n",
 				i, lt_ref_pic_poc_lsb_sps,
-				i, used_by_curr_pic_lt_sps_flag);
+				i, (used_by_curr_pic_lt_sps_flags >> i) & 1);
 		}
 	}
 	s.temporal_mvp_enabled_flag = get_u1(r->CPB, &shift);
