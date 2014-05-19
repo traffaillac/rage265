@@ -25,6 +25,8 @@ typedef struct {
 	unsigned int separate_colour_plane_flag:1;
 	unsigned int BitDepth_Y:4;
 	unsigned int BitDepth_C:4;
+	unsigned int QpBdOffset_Y:6;
+	unsigned int QpBdOffset_C:6;
 	unsigned int log2_max_pic_order_cnt_lsb:5;
 	unsigned int max_dec_pic_buffering:5;
 	unsigned int max_num_reorder_pics:4;
@@ -53,8 +55,6 @@ typedef struct {
 	unsigned int num_extra_slice_header_bits:3;
 	unsigned int sign_data_hiding_enabled_flag:1;
 	unsigned int cabac_init_present_flag:1;
-	unsigned int num_ref_idx_l0_active:4;
-	unsigned int num_ref_idx_l1_active:4;
 	unsigned int constrained_intra_pred_flag:1;
 	unsigned int transform_skip_enabled_flag:1;
 	unsigned int cu_qp_delta_enabled_flag:1;
@@ -62,8 +62,7 @@ typedef struct {
 	int cb_qp_offset:5;
 	int cr_qp_offset:5;
 	unsigned int pps_slice_chroma_qp_offsets_present_flag:1;
-	unsigned int weighted_pred_flag:1;
-	unsigned int weighted_bipred_flag:1;
+	unsigned int weighted_pred_flags:2; // weighted_pred_flag << 1 | weighted_bipred_flag
 	unsigned int transquant_bypass_enabled_flag:1;
 	unsigned int entropy_coding_sync_enabled_flag:1;
 	unsigned int num_tile_columns:5;
@@ -71,7 +70,7 @@ typedef struct {
 	unsigned int loop_filter_across_tiles_enabled_flag:1;
 	unsigned int loop_filter_across_slices_enabled_flag:1;
 	unsigned int deblocking_filter_override_enabled_flag:1;
-	unsigned int pps_deblocking_filter_disabled_flag:1;
+	unsigned int deblocking_filter_disabled_flag:1;
 	int beta_offset:4;
 	int tc_offset:4;
 	unsigned int lists_modification_present_flag:1;
@@ -87,7 +86,8 @@ typedef struct {
 	uint32_t used_by_curr_pic_lt_sps_flags;
 	uint16_t colBd[23]; // 11 significant bits
 	uint16_t rowBd[21];
-	int8_t QP; // 7 significant bits
+	uint8_t num_ref_idx_active[2]; // 4 significant bits each
+	int8_t Qp; // 7 significant bits
 	uint8_t ScalingFactor4x4[6][16] __attribute__((aligned));
 	uint8_t ScalingFactor8x8[6][64] __attribute__((aligned));
 	uint8_t ScalingFactor16x16[6][64] __attribute__((aligned));
@@ -100,7 +100,7 @@ typedef struct {
 	int32_t PicOrderCntVal;
 } Rage265_picture;
 typedef struct {
-	const uint8_t *CPB;
+	uint8_t *CPB;
 	unsigned int CPB_size; // in bytes, 27 significant bits
 	unsigned int nal_unit_type:6;
 	int32_t prevPicOrderCntVal;

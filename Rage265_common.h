@@ -4,7 +4,7 @@
 #ifndef RAGE265_COMMON_H
 #define RAGE265_COMMON_H
 
-#if DEBUG >= 1
+#if !defined(DEBUG) || DEBUG >= 1
 #include <stdio.h>
 static inline const char *red_if(int cond) { return (cond) ? " style=\"color: red\"" : ""; }
 #else
@@ -101,7 +101,7 @@ static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t *
 
 static inline __attribute__((always_inline)) int get_se(const uint8_t * restrict CPB, unsigned int * restrict shift, int lower, int upper) {
 	unsigned int codeNum = get_ue(CPB, shift, max(-lower * 2, upper * 2 - 1));
-	unsigned int abs = (codeNum+ 1) / 2;
+	unsigned int abs = (codeNum + 1) / 2;
 	unsigned int sign = (codeNum % 2) - 1;
 	int res = (abs ^ sign) - sign;
 	return (-lower * 2 < upper * 2 - 1) ? max(res, lower) : (-lower * 2 > upper * 2 - 1) ? min(res, upper) : res;
@@ -241,13 +241,19 @@ static const uint8_t ScanOrder8x8[3][64] = {
 
 
 
-struct Rage265_slice {
-	Rage265_parameter_set p;
+typedef struct {
 	unsigned int ctb_x:11;
 	unsigned int ctb_y:11;
 	unsigned int slice_type:2;
 	unsigned int colour_plane_id:2;
+	unsigned int slice_sao_luma_flag:1;
+	unsigned int slice_sao_chroma_flag:1;
+	unsigned int mvd_l1_zero_flag:1;
+	unsigned int collocated_from_l1_flag:1;
+	unsigned int collocated_ref_idx:4;
+	unsigned int MaxNumMergeCand:3;
 	CABAC_ctx c;
-};
+	Rage265_parameter_set p;
+} Rage265_slice;
 
 #endif
