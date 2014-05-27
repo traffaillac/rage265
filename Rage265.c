@@ -1,6 +1,3 @@
-// TODO: Deblocking is carried in 3 dedicated threads with row callbacks executing before the image is released for output
-// Try ORing instead of setting every parameter_set field to see if generated code is smaller
-
 /**
  * Copyright (c) 2014 Thibault Raffaillac <traf@kth.se>
  */
@@ -68,7 +65,7 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 		unsigned int abs_delta_rps = get_ue(CPB, &shift, 32767) + 1;
 		int deltaRps = (abs_delta_rps ^ -delta_rps_sign) + delta_rps_sign;
 		unsigned int used_by_curr_pic_flags = 0;
-		unsigned int use_delta_flags = 0x1fffe;
+		unsigned int use_delta_flags = 0x1fffe; // TODO: simplify
 		for (unsigned int j = 0; j <= NumDeltaPocs; j++) {
 			unsigned int reorder = (j < NumNegativePics) ? NumNegativePics - j :
 				(j < NumDeltaPocs) ? j + 2 : (NumNegativePics + 1);
@@ -120,20 +117,190 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 
 
 
-static inline unsigned int parse_ref_pic_list_modification(const uint8_t *CPB,
-	unsigned int shift)
+/**
+ * 8.3.2 Decoding process for reference picture set
+ */
+static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
+	unsigned int *unavailable_poc, unsigned int *used_for_reference,
+	unsigned int *NumPocTotalCurr, const Rage265_ctx *r, unsigned int shift)
 {
-	
+	unsigned int short_term_ref_pic_set_sps_flag = get_u1(r->CPB, &shift);
+	printf("<li>short_term_ref_pic_set_sps_flag: <code>%x</code></li>\n",
+		short_term_ref_pic_set_sps_flag);
+	unsigned int short_term_ref_pic_set_idx = 0;
+	if (!short_term_ref_pic_set_sps_flag) {
+		short_term_ref_pic_set_idx = s->p.num_short_term_ref_pic_sets;
+		shift = parse_short_term_ref_pic_set(r->short_term_RPSs,
+			short_term_ref_pic_set_idx, r->CPB, shift,
+			short_term_ref_pic_set_idx, &s->p);
+	} else if (s->p.num_short_term_ref_pic_sets > 1) {
+		short_term_ref_pic_set_idx = min(get_uv(r->CPB, &shift,
+			WORD_BIT - __builtin_clz(s->p.num_short_term_ref_pic_sets - 1)),
+			s->p.num_short_term_ref_pic_sets);
+		printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
+			short_term_ref_pic_set_idx);
+	}
+	const uint16_t *st_RPS = r->short_term_RPSs[short_term_ref_pic_set_idx];
+	unsigned int NumPocStCurrBefore = 0;
+	for (unsigned int i = 0; i < (st_RPS[15] >> 8); i++) {
+		unsigned int NumNegativePics = st_RPS[15] & 0xff;
+		unsigned int idx = (i < NumNegativePics) ? NumNegativePics - 1 - i : i;
+		int pocSt = s->currPic.PicOrderCntVal + (i < NumNegativePics ?
+			-(st_RPS[idx] >> 1) - 1 : (st_RPS[idx] >> 1) + 1);
+		unsigned int j = 0;
+		while (j < s->p.max_dec_pic_buffering && r->DPB[j].PicOrderCntVal != pocSt)
+			j++;
+		if (j == s->p.max_dec_pic_buffering) {
+			*unavailable_poc = max(pocSt, *unavailable_poc);
+		} else {
+			*used_for_reference |= 1 << j;
+			if (used_by_curr_pic) {
+				s->RefPicList[0][*NumPocTotalCurr++] = &r->DPB[j];
+				NumPocStCurrBefore += i < NumNegativePics;
+			}
+		}
+	}
+	for (unsigned int i = 0; i < *NumPocTotalCurr; i++) {
+		s->RefPicList[1][i] = s->RefPicList[0][(i < NumPocStCurrBefore) ?
+			i + NumPocStCurrBefore : i - NumPocStCurrBefore];
+	}
+		
+	if (s->p.long_term_ref_pics_present_flag) {
+		unsigned int num_long_term_sps = 0;
+		if (s->p.num_long_term_ref_pics_sps > 0) {
+			num_long_term_sps = min(get_ue8(r->CPB, &shift),
+				min(s->p.num_long_term_ref_pics_sps,
+				s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8)));
+			printf("<li>num_long_term_sps: <code>%u</code></li>\n",
+				num_long_term_sps);
+		}
+		unsigned int num_long_term_pics = min(get_ue8(r->CPB, &shift),
+			s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8) - num_long_term_sps);
+		printf("<li>num_long_term_pics: <code>%u</code></li>\n",
+			num_long_term_pics);
+		unsigned int DeltaPocMsbCycleLt = 0;
+		for (unsigned int i = 0; i < num_long_term_sps + num_long_term_pics; i++) {
+			unsigned int pocLt, used_by_curr_pic_lt_flag;
+			if (i < num_long_term_sps) {
+				unsigned int lt_idx_sps = 0;
+				if (s->p.num_long_term_ref_pics_sps > 1) {
+					unsigned int lt_idx_sps = min(get_uv(r->CPB, &shift,
+						WORD_BIT - __builtin_clz(s->p.num_long_term_ref_pics_sps - 1)),
+						s->p.num_long_term_ref_pics_sps - 1);
+				}
+				pocLt = s->p.lt_ref_pic_poc_lsb_sps[lt_idx_sps];
+				used_by_curr_pic_lt_flag = (s->p.used_by_curr_pic_lt_sps_flags >> i) & 1;
+			} else {
+				if (i == num_long_term_sps)
+					DeltaPocMsbCycleLt = 0;
+				pocLt = get_uv(r->CPB, &shift, s->p.log2_max_pic_order_cnt_lsb);
+				used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
+			}
+			unsigned int delta_poc_msb_present_flag = get_u1(r->CPB, &shift);
+			if (delta_poc_msb_present_flag) {
+				DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
+				pocLt += (s->currPic.PicOrderCntVal & -MaxPicOrderCntLsb) -
+					(DeltaPocMsbCycleLt << s->p.log2_max_pic_order_cnt_lsb);
+			}
+			printf("<li>pocLt[%u]: <code>%u, %s</code></li>\n",
+				i, pocLt, used_by_curr_pic_lt_flag ? "used" : "follow");
+			unsigned int j = 0;
+			while (j < s->p.max_dec_pic_buffering && r->DPB[j].PicOrderCntVal != pocLt)
+				j++;
+			if (j == s->p.max_dec_pic_buffering) {
+				*unavailable_poc = max(pocLt, *unavailable_poc);
+				*used_for_reference |= 1 << j;
+				if (used_by_curr_pic_lt_flag) {
+					s->RefPicList[0][*NumPocTotalCurr] = &r->DPB[j];
+					s->RefPicList[1][*NumPocTotalCurr++] = &r->DPB[j];
+				}
+			}
+		}
+	}
 	return shift;
 }
 
 
 
-static inline unsigned int parse_pred_weight_table(const uint8_t *CPB,
-	unsigned int shift)
-{
-	
+static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uint8_t *CPB, unsigned int shift) {
+	for (int l = 0; l < 2 - s->slice_type; l++) {
+		unsigned int ref_pic_list_modification_flag = get_u1(CPB, &shift);
+		if (ref_pic_list_modification_flag) {
+			const Rage265_picture *list[s->p.num_ref_idx_active[l]];
+			for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
+				unsigned int list_entry = min(get_uv(CPB, &shift,
+					WORD_BIT - __builtin_clz(s->p.num_ref_idx_active[l] - 1)),
+					s->p.num_ref_idx_active[l]);
+				list[i] = s->RefPicList[l][list_entry];
+				printf("<li>list_entry_l%u[%u]: <code>%u</code></li>\n",
+					l, i, list_entry);
+			}
+			memcpy(s->RefPicList[l], list, sizeof(list));
+		}
+	}
 	return shift;
+}
+
+
+
+static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB, unsigned int shift) {
+	s->log2_weight_denom[0] = get_ue(r->CPB, &shift, 7);
+	printf("<li>luma_log2_weight_denom: <code>%u</code></li>\n",
+		s->log2_weight_denom[0]);
+	if (s->p.chroma_format_idc != 0) {
+		unsigned int codeNum = get_ue8(r->CPB, &shift);
+		int abs = (codeNum + 1) / 2;
+		int sign = (codeNum % 2) - 1;
+		s->log2_weight_denom[1] = s->log2_weight_denom[2] = s->log2_weight_denom[0] +
+			((abs ^ sign) - sign);
+		if (s->log2_weight_denom[1] > 7) // unsigned min
+			s->log2_weight_denom[1] = 7;
+		printf("<li>ChromaLog2WeightDenom: <code>%u</code></li>\n",
+			s->log2_weight_denom[1]);
+	}
+	for (int l = 0; l < 2 - s->slice_type; l++) {
+		unsigned int luma_weight_flags = get_uv(CPB, &shift, s->p.num_ref_idx_active[l]);
+		unsigned int chroma_weight_flags = (s->p.chroma_format_idc != 0) ?
+			get_uv(CPB, &shift, s->p.num_ref_idx_active[l]) : 0;
+		for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
+			if (luma_weight_flags & (1 << (s->p.num_ref_idx_active[l] - 1 - i))) {
+				s->delta_weights[i][0] = get_se(CPB, &shift, -128, 127);
+				s->delta_offsets[i][0] = get_se(CPB, &shift, -128, 127);
+				printf("<li>delta_luma_weight_l%u[%u]: <code>%d</code></li>\n"
+					"<li>luma_offset_l%u[%u]: <code>%d</code></li>\n",
+					l, i, s->delta_weights[i][0],
+					l, i, s->delta_offsets[i][0]);
+			}
+			if (chroma_weight_flags & (1 << (s->p.num_ref_idx_active[l] - 1 - i))) {
+				for (unsigned int j = 0; j < 2; j++) {
+					s->delta_weights[i][1 + j] = get_se(CPB, &shift, -128, 127);
+					unsigned int codeNum = get_ue32(CPB, &shift);
+					int abs = (codeNum + 1) / 2;
+					int sign = (codeNum % 2) - 1;
+					s->delta_offsets[i][1 + j] = min(max((abs ^ sign) - sign -
+						(s->delta_weights[i][1 + j] << (7 - s->log2_weight_denom[1])), -128, 127);
+					printf("<li>delta_chroma_weight_l%u[%u][%u]: <code>%d</code></li>\n"
+						"<li>ChromaOffsetL%u[%u][%u]: <code>%d</code></li>\n",
+						l, i, j, s->delta_weights[i][1 + j],
+						l, i, j, s->delta_offsets[i][1 + j]);
+				}
+			}
+		}
+	}
+	return shift;
+}
+
+
+
+/**
+ * Fills an array of samples with 1<<(BitDepth-1).
+ */
+static void paint_grey(uint8_t *buf, size_t len, unsigned int BitDepth) {
+	typedef union { uint8_t q[16]; uint16_t h[8]; } Vect __attribute__((aligned(16)));
+	unsigned int grey = 1 << (BitDepth - 1);
+	Vect v = (BitDepth == 8) ? (Vect){.q = {[0 ... 15] = grey}} : (Vect){.h = {[0 ... 7] = grey}};
+	for (size_t s = 0; s < len; s += sizeof(v))
+		*(Vect *)(buf + s) = v;
 }
 
 
@@ -142,7 +309,7 @@ static inline unsigned int parse_pred_weight_table(const uint8_t *CPB,
  * This function parses a section_segment_header(), and calls
  * parse_slice_segment_data() if no error was detected.
  */
-static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
+static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned int lim) {
 	static const char * const slice_type_names[3] = {"B", "P", "I"};
 	static const char * const colour_plane_id_names[3] = {"Y", "Cb", "Cr"};
 	
@@ -160,7 +327,7 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 		red_if(slice_pic_parameter_set_id >= 4), slice_pic_parameter_set_id);
 	if (slice_pic_parameter_set_id >= 4 ||
 		r->PPSs[slice_pic_parameter_set_id].num_ref_idx_active[0] == 0)
-		return;
+		return NULL;
 	Rage265_slice s = {.p = r->PPSs[slice_pic_parameter_set_id]};
 	unsigned int dependent_slice_segment_flag = 0;
 	if (!first_slice_segment_in_pic_flag) {
@@ -179,22 +346,23 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 				slice_segment_address);
 		}
 	}
+	int unavailable_poc = INT32_MIN;
+	unsigned int used_for_reference = 0;
 	if (!dependent_slice_segment_flag) {
 		shift += s.p.num_extra_slice_header_bits;
 		s.slice_type = get_ue(r->CPB, &shift, 2);
 		printf("<li>slice_type: <code>%u (%s)</code></li>\n",
 			s.slice_type, slice_type_names[s.slice_type]);
-		unsigned int pic_output_flag = 0;
 		if (s.p.output_flag_present_flag) {
-			pic_output_flag = get_u1(r->CPB, &shift);
-			printf("<li>pic_output_flag: <code>%x</code></li>\n", pic_output_flag);
+			s.currPic.needed_for_output = get_u1(r->CPB, &shift);
+			printf("<li>pic_output_flag: <code>%x</code></li>\n",
+				s.currPic.needed_for_output);
 		}
 		if (s.p.separate_colour_plane_flag) {
 			s.colour_plane_id = get_uv(r->CPB, &shift, 2);
 			printf("<li>colour_plane_id: <code>%u (%s)</code></li>\n",
 				s.colour_plane_id, colour_plane_id_names[s.colour_plane_id]);
 		}
-		int PicOrderCntVal = 0;
 		unsigned int NumPocTotalCurr = 0;
 		if (r->nal_unit_type != 19 && r->nal_unit_type != 20) {
 			
@@ -202,74 +370,16 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 			unsigned int slice_pic_order_cnt_lsb = get_uv(r->CPB, &shift,
 				s.p.log2_max_pic_order_cnt_lsb);
 			int MaxPicOrderCntLsb = 1 << s.p.log2_max_pic_order_cnt_lsb;
-			PicOrderCntVal = (r->prevPicOrderCntVal & -MaxPicOrderCntLsb) |
+			s.currPic.PicOrderCntVal = (r->prevPicOrderCntVal & -MaxPicOrderCntLsb) |
 				slice_pic_order_cnt_lsb;
-			if (r->prevPicOrderCntVal - PicOrderCntVal >= MaxPicOrderCntLsb / 2)
+			if (r->prevPicOrderCntVal - s.currPic.PicOrderCntVal >= MaxPicOrderCntLsb / 2)
 				PicOrderCntVal += MaxPicOrderCntLsb;
-			if (PicOrderCntVal - r->prevPicOrderCntVal > MaxPicOrderCntLsb / 2)
-				PicOrderCntVal -= MaxPicOrderCntLsb;
-			printf("<li>PicOrderCntVal: <code>%d</code></li>\n", PicOrderCntVal);
+			if (s.currPic.PicOrderCntVal - r->prevPicOrderCntVal > MaxPicOrderCntLsb / 2)
+				s.currPic.PicOrderCntVal -= MaxPicOrderCntLsb;
+			printf("<li>PicOrderCntVal: <code>%d</code></li>\n", s.currPic.PicOrderCntVal);
 			
-			/* 8.3.2 Decoding process for reference picture set */
-			unsigned int short_term_ref_pic_set_sps_flag = get_u1(r->CPB, &shift);
-			printf("<li>short_term_ref_pic_set_sps_flag: <code>%x</code></li>\n",
-				short_term_ref_pic_set_sps_flag);
-			unsigned int short_term_ref_pic_set_idx = 0;
-			if (!short_term_ref_pic_set_sps_flag) {
-				short_term_ref_pic_set_idx = s.p.num_short_term_ref_pic_sets;
-				shift = parse_short_term_ref_pic_set(r->short_term_RPSs,
-					short_term_ref_pic_set_idx, r->CPB, shift,
-					short_term_ref_pic_set_idx, &s.p);
-			} else if (s.p.num_short_term_ref_pic_sets > 1) {
-				short_term_ref_pic_set_idx = min(get_uv(r->CPB, &shift,
-					WORD_BIT - __builtin_clz(s.p.num_short_term_ref_pic_sets - 1)),
-					s.p.num_short_term_ref_pic_sets);
-				printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
-					short_term_ref_pic_set_idx);
-			}
-			const uint16_t *st_RPS = r->short_term_RPSs[short_term_ref_pic_set_idx];
-			
-			if (s.p.long_term_ref_pics_present_flag) {
-				unsigned int num_long_term_sps = 0;
-				if (s.p.num_long_term_ref_pics_sps > 0) {
-					num_long_term_sps = min(get_ue8(r->CPB, &shift),
-						min(s.p.num_long_term_ref_pics_sps,
-						s.p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8)));
-					printf("<li>num_long_term_sps: <code>%u</code></li>\n",
-						num_long_term_sps);
-				}
-				unsigned int num_long_term_pics = min(get_ue8(r->CPB, &shift),
-					s.p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8) - num_long_term_sps);
-				printf("<li>num_long_term_pics: <code>%u</code></li>\n",
-					num_long_term_pics);
-				unsigned int DeltaPocMsbCycleLt = 0;
-				for (unsigned int i = 0; i < num_long_term_sps + num_long_term_pics; i++) {
-					unsigned int pocLt, used_by_curr_pic_lt_flag;
-					if (i < num_long_term_sps) {
-						unsigned int lt_idx_sps = 0;
-						if (s.p.num_long_term_ref_pics_sps > 1) {
-							unsigned int lt_idx_sps = min(get_uv(r->CPB, &shift,
-								WORD_BIT - __builtin_clz(s.p.num_long_term_ref_pics_sps - 1)),
-								s.p.num_long_term_ref_pics_sps - 1);
-						}
-						pocLt = s.p.lt_ref_pic_poc_lsb_sps[lt_idx_sps];
-						used_by_curr_pic_lt_flag = (s.p.used_by_curr_pic_lt_sps_flags >> i) & 1;
-					} else {
-						if (i == num_long_term_sps)
-							DeltaPocMsbCycleLt = 0;
-						pocLt = get_uv(r->CPB, &shift, s.p.log2_max_pic_order_cnt_lsb);
-						used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
-					}
-					unsigned int delta_poc_msb_present_flag = get_u1(r->CPB, &shift);
-					if (delta_poc_msb_present_flag) {
-						DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
-						pocLt += (PicOrderCntVal & -MaxPicOrderCntLsb) -
-							(DeltaPocMsbCycleLt << s.p.log2_max_pic_order_cnt_lsb);
-					}
-					printf("<li>pocLt[%u]: <code>%u, %s</code></li>\n",
-						i, pocLt, used_by_curr_pic_lt_flag ? "used" : "follow");
-				}
-			}
+			shift = parse_slice_ref_pic_set(&s, &unavailable_poc, &used_for_reference,
+				&NumPocTotalCurr, r, shift);
 			if (s.p.temporal_mvp_enabled_flag) {
 				s.p.temporal_mvp_enabled_flag = get_u1(r->CPB, &shift);
 				printf("<li>slice_temporal_mvp_enabled_flag: <code>%x</code></li>\n",
@@ -291,10 +401,8 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 				printf("<li>num_ref_idx_l%u_active: <code>%u</code></li>\n",
 					l, s.p.num_ref_idx_active[l]);
 			}
-			if (s.p.lists_modification_present_flag && NumPocTotalCurr > 1) {
-				for (int l = 0; l < 2 - s.slice_type; l++)
-					shift = parse_ref_pic_list_modification(r->CPB, shift);
-			}
+			if (s.p.lists_modification_present_flag && NumPocTotalCurr > 1)
+				shift = parse_ref_pic_lists_modification(&s, r->CPB, shift);
 			if (s.slice_type == 0) {
 				s.mvd_l1_zero_flag = get_u1(r->CPB, &shift);
 				printf("<li>mvd_l1_zero_flag: <code>%x</code></li>\n",
@@ -319,24 +427,8 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 						s.collocated_ref_idx);
 				}
 			}
-			if ((s.p.weighted_pred_flags >> s.slice_type) & 1) {
-				unsigned int luma_log2_weight_denom = get_ue(r->CPB, &shift, 7);
-				printf("<li>luma_log2_weight_denom: <code>%u</code></li>\n",
-					luma_log2_weight_denom);
-				if (s.p.ChromaArrayType != 0 || s.p.separate_colour_plane_flag) {
-					unsigned int codeNum = get_ue8(r->CPB, &shift);
-					unsigned int abs = (codeNum + 1) / 2;
-					unsigned int sign = (codeNum % 2) - 1;
-					unsigned int chroma_log2_weight_denom = luma_log2_weight_denom +
-						(abs ^ sign) - sign;
-					if (chroma_log2_weight_denom > 7) // unsigned min
-						chroma_log2_weight_denom = 7;
-					printf("<li>chroma_log2_weight_denom: <code>%u</code></li>\n",
-						chroma_log2_weight_denom);
-				}
-				for (int l = 0; l < 2 - s.slice_type; l++)
-					shift = parse_pred_weight_table(r->CPB, shift);
-			}
+			if ((s.p.weighted_pred_flags >> s.slice_type) & 1)
+				shift = parse_pred_weight_table(&s, r->CPB, shift);
 			s.MaxNumMergeCand = 5 - get_ue(r->CPB, &shift, 4);
 			printf("<li>MaxNumMergeCand: <code>%u</code></li>\n",
 				s.MaxNumMergeCand);
@@ -394,23 +486,118 @@ static void parse_slice_segment_header(Rage265_ctx *r, unsigned int lim) {
 	}
 	if (s.p.slice_segment_header_extension_present_flag)
 		shift += get_ue(r->CPB, &shift, 256);
+	
+	/* Proceed to DPB update when we are assured the slice header was correct. */
+	if (shift >= lim || ((r->CPB[shift / 8] << (shift % 8)) & 0xff) != 0x80 ||
+		dependent_slice_segment_flag)
+		return NULL;
 	s.c.shift = (shift + 8) & -8;
-	if (dependent_slice_segment_flag)
-		return;
+	if ((1 << r->nal_unit_type) & 0xffa82a && r->TemporalId == 0)
+		r->prevPicOrderCntVal = s.currPic.PicOrderCntVal;
+	
+	/* When some references are unavailable, create a grey picture for replacement. */
+	if (unavailable_poc > INT32_MIN) {
+		unsigned int i, avail = 0;
+		for (i = 0; i < s.p.max_dec_pic_buffering && &r->DPB[i].grey_picture; i++) {
+			if (!r->DPB[i].needed_for_output && !(used_for_reference & (1 << i)))
+				avail = i;
+		}
+		if (i == s.p.max_dec_pic_buffering) {
+			i = avail;
+			r->DPB[i].needed_for_output = 0;
+			r->DPB[i].grey_picture = 1;
+			r->DPB[i].PicOrderCntVal = unavailable_poc;
+			size_t ctb_size = s.PicWidthInCtbsY * s.PicHeightInCtbsY * sizeof(Rage265_ctb);
+			memset(r->DPB[i].CTBs, 0, ctb_size);
+			paint_grey(r->DPB[i].image, s.image_offsets[1], s.BitDepth_Y);
+			paint_grey(r->DPB[i].image + s.image_offsets[1], s.image_offsets[3] -
+				s.image_offsets[1], s.BitDepth_C);
+		}
+		used_for_reference |= 1 << i;
+		for (int l = 0; l < 2 - s.slice_type; l++) {
+			for (unsigned int j = 0; j < s.p.num_ref_idx_active[l]; j++) {
+				if (s.RefPicList[l][j] == NULL)
+					s.RefPicList[l][j] = &r->DPB[i];
+			}
+		}
+	}
+	
+	/* Select an DPB emplacement for the new picture. */
+	Rage265_picture *avail = r->DPB;
+	for (unsigned int i = 0; i < s.p.max_dec_pic_buffering; i++) {
+		if (!r->DPB[i].needed_for_output && !(used_for_reference & (1 << i)))
+			avail = &r->DPB[i];
+	}
+	s.currPic.image = avail->image;
+	s.currPic.CTBs = avail->CTBs;
+	*avail = s.currPic;
+	
+	// TODO: Parse the slice data
+	
+	/* Select an image for output. */
+	Rage265_picture *output = NULL;
+	unsigned int num_reordered_pics = 0;
+	for (unsigned int i = 0; i < s.p.max_dec_pic_buffering; i++) {
+		if (r->DPB[i].needed_for_output) {
+			num_reordered_pics++;
+			if (output == NULL || r->DPB[i].PicOrderCntVal < output->PicOrderCntVal)
+				output = &r->DPB[i];
+		}
+	}
+	if (num_reordered_pics <= s.p.max_num_reorder_pics && r->nal_unit_type < 20 &&
+		r->nal_unit_type != 18)
+		output = NULL;
+	else
+		output->needed_for_output = 0;
+	return output;
 }
 
 
 
-static void parse_AUD(Rage265_ctx *r, unsigned int lim) {
+static const Rage265_picture *parse_end_of_bitstream(Rage265_ctx *r, unsigned int lim) {
+	if (lim == 0) {
+		if (r->CPB != NULL)
+			free(r->CPB);
+		if (r->DPB[0].image != NULL)
+			free(r->DPB[0].image);
+		memset(r, 0, sizeof(*r));
+	}
+	return NULL;
+}
+
+
+
+static const Rage265_picture *parse_end_of_seq(Rage265_ctx *r, unsigned int lim) {
+	const Rage265_picture *output = NULL;
+	if (lim == 0) {
+		for (unsigned int i = 0; i < r->SPS.max_dec_pic_buffering; i++) {
+			if (r->DPB[i].needed_for_output && (output == NULL ||
+				r->DPB[i].PicOrderCntVal < output->PicOrderCntVal))
+				output = &r->DPB[i];
+		}
+		if (output != NULL)
+			output->needed_for_output = 0;
+		else
+			r->prevPicOrderCntVal = 0;
+	}
+	return output;
+}
+
+
+
+static const Rage265_picture *parse_access_unit_delimiter(Rage265_ctx *r, unsigned int lim) {
 	static const char * const pic_type_names[8] = {"I", "P, I", "B, P, I", [3 ... 7] = "unknown"};
 	unsigned int pic_type = *r->CPB >> 5;
 	printf("<li%s>pic_type: <code>%u (%s)</code></li>\n",
 		red_if(lim != 3), pic_type, pic_type_names[pic_type]);
+	return NULL;
 }
 
 
 
-static unsigned int parse_scaling_list_data(Rage265_parameter_set *p, const uint8_t *CPB, unsigned int shift) {
+static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
+	const uint8_t *CPB, unsigned int shift)
+{
 	for (unsigned int matrixId = 0; matrixId < 6; matrixId++) {
 		printf("<li>ScalingList[0][%u]: <code>", matrixId);
 		unsigned int scaling_list_pred_mode_flag = get_u1(CPB, &shift);
@@ -445,7 +632,8 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p, const uint
 				unsigned int nextCoef = 8;
 				if (sizeId > 0) {
 					nextCoef = 8 + get_se(CPB, &shift, -7, 247);
-					(sizeId == 1 ? p->ScalingFactor4x4[matrixId] : p->ScalingFactor8x8[matrixId])[0] = nextCoef;
+					(sizeId == 1 ? p->ScalingFactor4x4[matrixId] :
+						p->ScalingFactor8x8[matrixId])[0] = nextCoef;
 					printf("%u(DC)", nextCoef);
 				}
 				for (unsigned int i = 0; i < 64; i++) {
@@ -466,7 +654,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p, const uint
  * This function parses the PPS into a copy of the current SPS, and stores it
  * if no error was detected.
  */
-static void parse_PPS(Rage265_ctx *r, unsigned int lim) {
+static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsigned int lim) {
 	Rage265_parameter_set p = r->SPS;
 	unsigned int shift = 0;
 	unsigned int pps_pic_parameter_set_id = get_ue(r->CPB, &shift, 63);
@@ -509,7 +697,8 @@ static void parse_PPS(Rage265_ctx *r, unsigned int lim) {
 		p.transform_skip_enabled_flag,
 		p.cu_qp_delta_enabled_flag);
 	if (p.cu_qp_delta_enabled_flag) {
-		p.Log2MinCuQpDeltaSize = max(p.CtbLog2SizeY - get_ue8(r->CPB, &shift), p.MinCbLog2SizeY);
+		p.Log2MinCuQpDeltaSize = max(p.CtbLog2SizeY - get_ue8(r->CPB, &shift),
+			p.MinCbLog2SizeY);
 		printf("<li>Log2MinCuQpDeltaSize: <code>%u</code></li>\n",
 			p.Log2MinCuQpDeltaSize);
 	}
@@ -558,12 +747,14 @@ static void parse_PPS(Rage265_ctx *r, unsigned int lim) {
 				p.rowBd[i] = i * p.PicHeightInCtbsY / p.num_tile_rows;
 		} else {
 			for (unsigned int i = 1; i < p.num_tile_columns; i++) {
-				unsigned int column_width = min(get_ue32(r->CPB, &shift) + 1, p.PicWidthInCtbsY - p.colBd[i - 1] - (p.num_tile_columns - i));
+				unsigned int column_width = min(get_ue32(r->CPB, &shift) + 1,
+					p.PicWidthInCtbsY - p.colBd[i - 1] - (p.num_tile_columns - i));
 				p.colBd[i] = p.colBd[i - 1] + column_width;
 				printf("<li>column_width[%u]: <code>%u</code></li>\n", i - 1, column_width);
 			}
 			for (unsigned int i = 1; i < p.num_tile_rows; i++) {
-				unsigned int row_height = min(get_ue32(r->CPB, &shift) + 1, p.PicHeightInCtbsY - p.rowBd[i - 1] - (p.num_tile_rows - i));
+				unsigned int row_height = min(get_ue32(r->CPB, &shift) + 1,
+					p.PicHeightInCtbsY - p.rowBd[i - 1] - (p.num_tile_rows - i));
 				p.rowBd[i] = p.rowBd[i - 1] + row_height;
 				printf("<li>row_height[%u]: <code>%u</code></li>\n", i - 1, row_height);
 			}
@@ -613,8 +804,10 @@ static void parse_PPS(Rage265_ctx *r, unsigned int lim) {
 		printf("<li style=\"color: red\">Bitstream overflow (%d bits)</li>\n", shift - lim);
 	
 	/* The test for seq_parameter_set_id must happen before any use of SPS data. */
-	if (shift == lim && pps_pic_parameter_set_id < 4 && pps_seq_parameter_set_id == 0 && r->DPB != NULL)
+	if (shift == lim && pps_pic_parameter_set_id < 4 && pps_seq_parameter_set_id == 0 &&
+		r->DPB[0].image != NULL)
 		r->PPSs[pps_pic_parameter_set_id] = p;
+	return NULL;
 }
 
 
@@ -666,7 +859,7 @@ static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const u
  * This function parses the SPS into a Rage265_parameter_set structure, and
  * stores it if no error was detected.
  */
-static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
+static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsigned int lim) {
 	static const char * const chroma_format_idc_names[4] = {"4:0:0", "4:2:0", "4:2:2", "4:4:4"};
 	
 	Rage265_parameter_set s = {0};
@@ -684,12 +877,12 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 		s.temporal_id_nesting_flag);
 	unsigned int shift = 8 * (parse_profile_tier_level(&s, r->CPB + 1) - r->CPB);
 	unsigned int sps_seq_parameter_set_id = get_ue(r->CPB, &shift, 15);
-	s.ChromaArrayType = get_ue(r->CPB, &shift, 3);
+	s.ChromaArrayType = s.chroma_format_idc = get_ue(r->CPB, &shift, 3);
 	printf("<li%s>sps_seq_parameter_set_id: <code>%u</code></li>\n"
 		"<li>chroma_format_idc: <code>%u (%s)</code></li>\n",
 		red_if(sps_seq_parameter_set_id > 0), sps_seq_parameter_set_id,
-		s.ChromaArrayType, chroma_format_idc_names[s.ChromaArrayType]);
-	if (s.ChromaArrayType == 3) {
+		s.chroma_format_idc, chroma_format_idc_names[s.chroma_format_idc]);
+	if (s.chroma_format_idc == 3) {
 		s.separate_colour_plane_flag = get_u1(r->CPB, &shift);
 		s.ChromaArrayType &= s.separate_colour_plane_flag - 1;
 		printf("<li>separate_colour_plane_flag: <code>%x</code></li>\n",
@@ -857,43 +1050,51 @@ static void parse_SPS(Rage265_ctx *r, unsigned int lim) {
 	
 	/* Clear the r->CPB and reallocate the DPB when the image format changes. */
 	if (shift != lim || sps_seq_parameter_set_id > 0 || s.general_profile_space > 0)
-		return;
-	if ((s.ChromaArrayType ^ r->SPS.ChromaArrayType) |
+		return NULL;
+	s.pic_width_in_luma_samples &= -1 << s.MinCbLog2SizeY;
+	s.pic_height_in_luma_samples &= -1 << s.MinCbLog2SizeY;
+	unsigned int PicSizeInSamplesY = s.pic_width_in_luma_samples *
+		s.pic_height_in_luma_samples;
+	if (PicSizeInSamplesY > 35651584) {
+		s.pic_height_in_luma_samples = 35651584 / s.pic_width_in_luma_samples;
+		PicSizeInSamplesY = s.pic_width_in_luma_samples * s.pic_height_in_luma_samples;
+	}
+	unsigned int PicSizeInSamplesC = PicSizeInSamplesY / 4 *
+		(1 << s.chroma_format_idc >> 1);
+	s.image_offsets[1] = PicSizeInSamplesY << ((s.BitDepth_Y - 1) / 8);
+	size_t chroma_size = PicSizeInSamplesC << ((s.BitDepth_C - 1) / 8);
+	s.image_offsets[2] = s.image_offsets[1] + chroma_size;
+	s.image_offsets[3] = s.image_offsets[2] + chroma_size;
+	if ((s.chroma_format_idc ^ r->SPS.chroma_format_idc) |
 		(s.pic_width_in_luma_samples ^ r->SPS.pic_width_in_luma_samples) |
 		(s.pic_height_in_luma_samples ^ r->SPS.pic_height_in_luma_samples) |
 		(s.BitDepth_Y ^ r->SPS.BitDepth_Y) | (s.BitDepth_C ^ r->SPS.BitDepth_C) |
 		(s.max_dec_pic_buffering ^ r->SPS.max_dec_pic_buffering)) {
 		free((uint8_t *)r->CPB);
 		r->CPB = NULL;
-		s.pic_width_in_luma_samples &= -1 << s.MinCbLog2SizeY;
-		s.pic_height_in_luma_samples &= -1 << s.MinCbLog2SizeY;
-		unsigned int PicSizeInSamplesY = s.pic_width_in_luma_samples * s.pic_height_in_luma_samples;
-		if (PicSizeInSamplesY > 35651584) {
-			s.pic_height_in_luma_samples = 35651584 / s.pic_width_in_luma_samples;
-			PicSizeInSamplesY = s.pic_width_in_luma_samples * s.pic_height_in_luma_samples;
-		}
-		unsigned int PicSizeInSamplesC = PicSizeInSamplesY / 4 * (1 << s.ChromaArrayType >> 1);
-		size_t luma_size = PicSizeInSamplesY << ((s.BitDepth_Y - 1) / 8);
-		size_t chroma_size = PicSizeInSamplesC << ((s.BitDepth_C - 1) / 8);
-		if (r->DPB != NULL)
-			free(r->DPB);
-		r->DPB = calloc(s.max_dec_pic_buffering, sizeof(Rage265_picture) +
-			luma_size + 2 * chroma_size);
-		uint8_t *p = (uint8_t *)(((uintptr_t)(r->DPB + s.max_dec_pic_buffering) + 63) & -64);
+		size_t ctb_size = s.PicWidthInCtbsY * s.PicHeightInCtbsY * sizeof(Rage265_ctb);
+		if (r->DPB[0].image != NULL)
+			free(r->DPB[0].image);
+		r->DPB[0].image = calloc(s.max_dec_pic_buffering, s.image_offsets[3] + ctb_size);
 		for (unsigned int i = 0; i < s.max_dec_pic_buffering; i++) {
-			r->DPB[i].image = p;
+			r->DPB[i].image = r->DPB[0].image + i * (image_offsets[3] + ctb_size);
+			r->DPB[i].CTBs = (Rage265_ctb *)(r->DPB[i].image + image_offsets[3]);
+			r->DPB[i].needed_for_output = 0;
+			r->DPB[i].grey_picture = 0;
 			r->DPB[i].PicOrderCntVal = INT32_MIN;
-			p += luma_size + 2 * chroma_size;
 		}
 		memset(r->PPSs, 0, sizeof(r->PPSs));
 	}
 	r->SPS = s;
 	memcpy(r->short_term_RPSs, short_term_RPSs, sizeof(short_term_RPSs));
+	return NULL
 }
 
 
 
-static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift, unsigned int cprms_present_flag, unsigned int max_sub_layers) {
+static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
+	unsigned int cprms_present_flag, unsigned int max_sub_layers)
+{
 	
 	return shift;
 }
@@ -903,7 +1104,7 @@ static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
 /**
  * This function currently only prints the VPS to stdout.
  */
-static void parse_VPS(Rage265_ctx *r, unsigned int lim) {
+static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned int lim) {
 	unsigned int u = htobe16(*(uint16_t *)r->CPB);
 	unsigned int vps_video_parameter_set_id = u >> 12;
 	unsigned int vps_max_layers = ((u >> 4) & 0x3f) + 1;
@@ -983,6 +1184,7 @@ static void parse_VPS(Rage265_ctx *r, unsigned int lim) {
 		shift = lim;
 	if (shift != lim)
 		printf("<li style=\"color: red\">Bitstream overflow (%d bits)</li>\n", shift - lim);
+	return NULL;
 }
 
 
@@ -995,13 +1197,14 @@ size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
 	ptrdiff_t chunk = (uint8_t *)((uintptr_t)buf & -sizeof(__m128i)) - buf;
 	for (size_t u = 0; chunk < (ptrdiff_t)len; u = chunk += sizeof(__m128i)) {
 		/* Skip chunks without a zero odd byte. */
-		if (__builtin_expect((_mm_movemask_epi8(_mm_cmpeq_epi8(*(__m128i *)(buf + chunk), _mm_setzero_si128())) & 0xaaaa) != 0, 0)) {
-			size_t lim = min(chunk + sizeof(__m128i) + 2, len);
-			for (unsigned int start_code = -1; u < lim; u++) {
-				start_code = ((start_code & 0xffff) << 8) | buf[u];
-				if (start_code == n)
-					return u - 2;
-			}
+		if ((_mm_movemask_epi8(_mm_cmpeq_epi8(*(__m128i *)(buf + chunk),
+			_mm_setzero_si128())) & 0xaaaa) == 0)
+			continue;
+		size_t lim = min(chunk + sizeof(__m128i) + 2, len);
+		for (unsigned int start_code = -1; u < lim; u++) {
+			start_code = ((start_code & 0xffff) << 8) | buf[u];
+			if (start_code == n)
+				return u - 2;
 		}
 	}
 	return len;
@@ -1044,12 +1247,13 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 		[40] = "Suffix Supplemental Enhancement Information",
 		[41 ... 63] = "unknown",
 	};
-	typedef void (*Parser)(Rage265_ctx *, unsigned int);
+	typedef const Rage265_picture *(*Parser)(Rage265_ctx *, unsigned int);
 	static const Parser parse_nal_unit[64] = {
-		[32] = parse_VPS,
-		[33] = parse_SPS,
-		[34] = parse_PPS,
-		[35] = parse_AUD,
+		[0 ... 21] = parse_slice_segment_layer,
+		[32] = parse_video_parameter_set,
+		[33] = parse_sequence_parameter_set,
+		[34] = parse_picture_parameter_set,
+		[35] = parse_access_unit_delimiter,
 	};
 	
 	/* Allocate the CPB. */
@@ -1091,16 +1295,17 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 	unsigned int nal_unit_header = (buf[0] << 8) | buf[1];
 	r->nal_unit_type = nal_unit_header >> 9;
 	unsigned int nuh_layer_id = (nal_unit_header >> 3) & 0x3f;
-	unsigned int nuh_temporal_id = (nal_unit_header - 1) & 0x7;
+	r->TemporalId = (nal_unit_header - 1) & 0x7;
 	printf("<ul class=\"frame\">\n"
 		"<li%s>nal_unit_type: <code>%u (%s)</code></li>\n"
 		"<li>nuh_layer_id: <code>%u</code></li>\n"
-		"<li>nuh_temporal_id: <code>%u</code></li>\n",
+		"<li>TemporalId: <code>%u</code></li>\n",
 		red_if(parse_nal_unit[r->nal_unit_type] == NULL), r->nal_unit_type, nal_unit_type_names[r->nal_unit_type],
 		nuh_layer_id,
-		nuh_temporal_id);
+		r->TemporalId);
+	const Rage265_picture *output = NULL;
 	if (nuh_layer_id == 0 && parse_nal_unit[r->nal_unit_type] != NULL)
-		parse_nal_unit[r->nal_unit_type](r, lim);
+		output = parse_nal_unit[r->nal_unit_type](r, lim);
 	printf("</ul>\n");
-	return NULL;
+	return output;
 }

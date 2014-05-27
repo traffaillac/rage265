@@ -96,13 +96,14 @@ static unsigned int get_ue64(const uint8_t * restrict CPB, unsigned int * restri
 static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t * restrict CPB, unsigned int * restrict shift, unsigned int upper) {
 	assert(upper<4294967295);
 	unsigned int res = (upper <= 31) ? get_ue8(CPB, shift) : (upper <= 65534) ? get_ue32(CPB, shift) : get_ue64(CPB, shift);
-	return (res < upper) ? res : upper;
+	return (res < upper) ? res : upper; // unsigned min
 }
 
 static inline __attribute__((always_inline)) int get_se(const uint8_t * restrict CPB, unsigned int * restrict shift, int lower, int upper) {
-	unsigned int codeNum = get_ue(CPB, shift, max(-lower * 2, upper * 2 - 1));
-	unsigned int abs = (codeNum + 1) / 2;
-	unsigned int sign = (codeNum % 2) - 1;
+	unsigned int last = max(-lower * 2, upper * 2 - 1);
+	unsigned int codeNum = (last <= 31) ? get_ue8(CPB, shift) : (last <= 65534) ? get_ue32(CPB, shift) : get_ue64(CPB, shift);
+	int abs = (codeNum + 1) / 2;
+	int sign = (codeNum % 2) - 1;
 	int res = (abs ^ sign) - sign;
 	return (-lower * 2 < upper * 2 - 1) ? max(res, lower) : (-lower * 2 > upper * 2 - 1) ? min(res, upper) : res;
 }
@@ -242,6 +243,7 @@ static const uint8_t ScanOrder8x8[3][64] = {
 
 
 typedef struct {
+	Rage265_picture currPic;
 	unsigned int ctb_x:11;
 	unsigned int ctb_y:11;
 	unsigned int slice_type:2;
@@ -252,8 +254,12 @@ typedef struct {
 	unsigned int collocated_from_l1_flag:1;
 	unsigned int collocated_ref_idx:4;
 	unsigned int MaxNumMergeCand:3;
+	int8_t delta_weights[15][3];
+	int8_t delta_offsets[15][3];
+	uint8_t log2_weight_denom[3];
 	CABAC_ctx c;
 	Rage265_parameter_set p;
+	const Rage265_picture *RefPicList[2][15];
 } Rage265_slice;
 
 #endif
