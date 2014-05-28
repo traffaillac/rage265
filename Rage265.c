@@ -65,10 +65,10 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 		unsigned int abs_delta_rps = get_ue(CPB, &shift, 32767) + 1;
 		int deltaRps = (abs_delta_rps ^ -delta_rps_sign) + delta_rps_sign;
 		unsigned int used_by_curr_pic_flags = 0;
-		unsigned int use_delta_flags = 0x1fffe; // TODO: simplify
+		unsigned int use_delta_flags = 0xffff;
 		for (unsigned int j = 0; j <= NumDeltaPocs; j++) {
-			unsigned int reorder = (j < NumNegativePics) ? NumNegativePics - j :
-				(j < NumDeltaPocs) ? j + 2 : (NumNegativePics + 1);
+			unsigned int reorder = (j < NumNegativePics) ? NumNegativePics - 1 - j :
+				(j < NumDeltaPocs) ? j + 1 : NumNegativePics;
 			unsigned int used_by_curr_pic_flag = get_u1(CPB, &shift);
 			used_by_curr_pic_flags |= used_by_curr_pic_flag << reorder;
 			if (!used_by_curr_pic_flag)
@@ -81,9 +81,9 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 				dPoc -= (st_RPS[RefRpsIdx][j] >> 1) + 1;
 			else if (j > NumNegativePics)
 				dPoc += (st_RPS[RefRpsIdx][j - 1] >> 1) + 1;
-			if (((use_delta_flags >>= 1) & 1) && dPoc != 0) {
+			if (((use_delta_flags >> j) & 1) && dPoc != 0) {
 				st_RPS[stRpsIdx][i++] = (min(abs(dPoc) - 1, 32767) << 1) |
-					((used_by_curr_pic_flags >>= 1) & 1);
+					((used_by_curr_pic_flags >> j) & 1);
 				if (dPoc < 0)
 					k = i;
 			}
@@ -196,8 +196,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 				pocLt = get_uv(r->CPB, &shift, s->p.log2_max_pic_order_cnt_lsb);
 				used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
 			}
-			unsigned int delta_poc_msb_present_flag = get_u1(r->CPB, &shift);
-			if (delta_poc_msb_present_flag) {
+			if (get_u1(r->CPB, &shift)) {
 				DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
 				pocLt += (s->currPic.PicOrderCntVal & -MaxPicOrderCntLsb) -
 					(DeltaPocMsbCycleLt << s->p.log2_max_pic_order_cnt_lsb);
@@ -224,8 +223,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 
 static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uint8_t *CPB, unsigned int shift) {
 	for (int l = 0; l < 2 - s->slice_type; l++) {
-		unsigned int ref_pic_list_modification_flag = get_u1(CPB, &shift);
-		if (ref_pic_list_modification_flag) {
+		if (get_u1(CPB, &shift)) {
 			const Rage265_picture *list[s->p.num_ref_idx_active[l]];
 			for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
 				unsigned int list_entry = min(get_uv(CPB, &shift,
@@ -600,8 +598,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 {
 	for (unsigned int matrixId = 0; matrixId < 6; matrixId++) {
 		printf("<li>ScalingList[0][%u]: <code>", matrixId);
-		unsigned int scaling_list_pred_mode_flag = get_u1(CPB, &shift);
-		if (!scaling_list_pred_mode_flag) {
+		if (!get_u1(CPB, &shift)) {
 			unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
 			if (refMatrixId != matrixId)
 				memcpy(p->ScalingFactor4x4[matrixId], p->ScalingFactor4x4[refMatrixId], 16);
@@ -620,8 +617,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 		unsigned int num = (sizeId == 2) ? 2 : 6;
 		for (unsigned int matrixId = 0; matrixId < num; matrixId++) {
 			printf("<li>ScalingList[%u][%u]: <code>", sizeId + 1, matrixId);
-			unsigned int scaling_list_pred_mode_flag = get_u1(CPB, &shift);
-			if (!scaling_list_pred_mode_flag) {
+			if (!get_u1(CPB, &shift)) {
 				unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
 				memcpy((&p->ScalingFactor8x8)[sizeId][matrixId],
 					(refMatrixId != matrixId) ? (&p->ScalingFactor8x8)[sizeId][refMatrixId] :
@@ -764,10 +760,9 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 			p.loop_filter_across_tiles_enabled_flag);
 	}
 	p.loop_filter_across_slices_enabled_flag = get_u1(r->CPB, &shift);
-	unsigned int deblocking_filter_control_present_flag = get_u1(r->CPB, &shift);
 	printf("<li>pps_loop_filter_across_slices_enabled_flag: <code>%x</code></li>\n",
 		p.loop_filter_across_slices_enabled_flag);
-	if (deblocking_filter_control_present_flag) {
+	if (get_u1(CPB, &shift)) {
 		p.deblocking_filter_override_enabled_flag = get_u1(r->CPB, &shift);
 		p.deblocking_filter_disabled_flag = get_u1(r->CPB, &shift);
 		printf("<li>deblocking_filter_override_enabled_flag: <code>%x</code></li>\n"
@@ -783,8 +778,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 				p.tc_offset);
 		}
 	}
-	unsigned int pps_scaling_list_data_present_flag = get_u1(r->CPB, &shift);
-	if (pps_scaling_list_data_present_flag)
+	if (get_u1(CPB, &shift))
 		shift = parse_scaling_list_data(&p, r->CPB, shift);
 	p.lists_modification_present_flag = get_u1(r->CPB, &shift);
 	p.Log2ParMrgLevel = min(get_ue8(r->CPB, &shift) + 2, p.CtbLog2SizeY);
@@ -812,8 +806,245 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 
 
 
-static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift) {
+static unsigned int parse_sub_layer_hrd_parameters(const uint8_t *CPB,
+	unsigned int shift, unsigned int CpbCnt, unsigned int sub_pic_hrd_params_present_flag)
+{
+	for (unsigned int i = 0; i < CpbCnt; i++) {
+		unsigned int bit_rate_value = get_ue(CPB, &shift, 4294967294) + 1;
+		unsigned int cpb_size_value = get_ue(CPB, &shift, 4294967294) + 1;
+		printf("<ul>\n"
+			"<li>bit_rate_value[%u]: <code>%u</code></li>\n"
+			"<li>cpb_size_value[%u]: <code>%u</code></li>\n",
+			i, bit_rate_value,
+			i, cpb_size_value);
+		if (sub_pic_hrd_params_present_flag) {
+			unsigned int cpb_size_du_value = get_ue(CPB, &shift, 4294967294) + 1;
+			unsigned int bit_rate_du_value = get_ue(CPB, &shift, 4294967294) + 1;
+			printf("<li>cpb_size_du_value[%u]: <code>%u</code></li>\n"
+				"<li>bit_rate_du_value[%u]: <code>%u</code></li>\n",
+				i, cpb_size_du_value,
+				i, bit_rate_du_value);
+		}
+		unsigned int cbr_flag = get_u1(CPB, &shift);
+		printf("<li>cbr_flag[%u]: <code>%x</code></li>\n"
+			"</ul>\n",
+			i, cbr_flag);
+	}
+	return shift;
+}
+
+
+
+static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
+	unsigned int cprms_present_flag, unsigned int max_sub_layers)
+{
+	unsigned int nal_hrd_parameters_present_flag = 0;
+	unsigned int vcl_hrd_parameters_present_flag = 0;
+	unsigned int sub_pic_hrd_params_present_flag = 0;
+	if (cprms_present_flag) {
+		nal_hrd_parameters_present_flag = get_u1(CPB, &shift);
+		vcl_hrd_parameters_present_flag = get_u1(CPB, &shift);
+		if (nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag) {
+			sub_pic_hrd_params_present_flag = get_u1(CPB, &shift);
+			if (sub_pic_hrd_params_present_flag) {
+				unsigned int u = get_uv(CPB, &shift, 19);
+				unsigned int tick_divisor = (u >> 11) + 2;
+				unsigned int du_cpb_removal_delay_increment_length = ((u >> 6) & 0x1f) + 1;
+				unsigned int sub_pic_cpb_params_in_pic_timing_sei_flag = (u >> 5) & 1;
+				unsigned int dpb_output_delay_du_length = (u & 0x1f) + 1;
+				printf("<li>tick_divisor: <code>%u</code></li>\n"
+					"<li>du_cpb_removal_delay_increment_length: <code>%u</code></li>\n"
+					"<li>sub_pic_cpb_params_in_pic_timing_sei_flag: <code>%x</code></li>\n"
+					"<li>dpb_output_delay_du_length: <code>%u</code></li>\n",
+					tick_divisor,
+					du_cpb_removal_delay_increment_length,
+					sub_pic_cpb_params_in_pic_timing_sei_flag,
+					dpb_output_delay_du_length);
+			}
+			unsigned int scale = get_uv(CPB, &shift, 8);
+			unsigned int bit_rate_scale = u >> 4;
+			unsigned int cpb_size_scale = u & 0xf;
+			printf("<li>bit_rate_scale: <code>%u</code></li>\n"
+				"<li>cpb_size_scale: <code>%u</code></li>\n",
+				bit_rate_scale,
+				cpb_size_scale);
+			if (sub_pic_hrd_params_present_flag) {
+				unsigned int cpb_size_du_scale = get_uv(CPB, &shift, 4);
+				printf("<li>cpb_size_du_scale: <code>%u</code></li>\n",
+					cpb_size_du_scale);
+			}
+			unsigned int u = get_uv(CPB, &shift, 15);
+			unsigned int initial_cpb_removal_delay_length = (u >> 10) + 1;
+			unsigned int au_cpb_removal_delay_length = ((u >> 5) & 0x1f) + 1;
+			unsigned int dpb_output_delay_length = (u & 0x1f) + 1;
+			printf("<li>initial_cpb_removal_delay_length: <code>%u</code></li>\n"
+				"<li>au_cpb_removal_delay_length: <code>%u</code></li>\n"
+				"dpb_output_delay_length: <code>%u</code></li>\n",
+				initial_cpb_removal_delay_length,
+				au_cpb_removal_delay_length,
+				dpb_output_delay_length);
+		}
+	}
+	for (unsigned int i = 0; i <= max_sub_layers; i++) {
+		unsigned int fixed_pic_rate_general_flag = get_u1(CPB, &shift);
+		printf("<ul>\n"
+			"<li>fixed_pic_rate_general_flag[%u]: <code>%x</code></li>\n",
+			i, fixed_pic_rate_general_flag);
+		unsigned int fixed_pic_rate_within_cvs_flag = 1;
+		if (!fixed_pic_rate_general_flag) {
+			fixed_pic_rate_within_cvs_flag = get_u1(CPB, &shift);
+			printf("<li>fixed_pic_rate_within_cvs_flag[%u]: <code>%x</code></li>\n",
+				i, fixed_pic_rate_within_cvs_flag);
+		}
+		unsigned int low_delay_hrd_flag = 0;
+		if (fixed_pic_rate_within_cvs_flag) {
+			unsigned int elemental_duration_in_tc = get_ue(CPB, &shift, 2047) + 1;
+			printf("<li>elemental_duration_in_tc[%u]: <code>%u</code></li>\n",
+				i, elemental_duration_in_tc);
+		} else {
+			low_delay_hrd_flag = get_u1(CPB, &shift);
+			printf("<li>low_delay_hrd_flag[%u]: <code>%x</code></li>\n",
+				i, low_delay_hrd_flag);
+		}
+		unsigned int CpbCnt = 1;
+		if (!low_delay_hrd_flag) {
+			CpbCnt = get_ue(CPB, &shift, 31) + 1;
+			printf("<li>cpb_cnt[%u]: <code>%u</code></li>\n", i, CpbCnt);
+		}
+		if (nal_hrd_parameters_present_flag)
+			shift = parse_sub_layer_hrd_parameters(CPB, shift, CpbCnt, sub_pic_hrd_params_present_flag);
+		if (vcl_hrd_parameters_present_flag)
+			shift = parse_sub_layer_hrd_parameters(CPB, shift, CpbCnt, sub_pic_hrd_params_present_flag);
+		printf("</ul>\n");
+	}
+	return shift;
+}
+
+
+
+static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
+	unsigned int max_sub_layers)
+{
+	static const unsigned int ratio2sar[256] = {0, 0x00010001, 0x000c000b,
+		0x000a000b, 0x0010000b, 0x00280021, 0x0018000b, 0x0014000b, 0x0020000b,
+		0x00500021, 0x0012000b, 0x000f000b, 0x00400021, 0x00a00063, 0x00040003,
+		0x00030002, 0x00020001};
+	static const char * const video_format_names[8] = {"Component", "PAL",
+		"NTSC", "SECAM", "MAC", [5 .. 7] = "Unspecified"};
 	
+	if (get_u1(CPB, &shift)) {
+		unsigned int aspect_ratio_idc = get_uv(CPB, &shift, 8);
+		unsigned int sar = ratio2sar[aspect_ratio_idc];
+		if (aspect_ratio_idc == 255)
+			sar = get_uv(CPB, &shift, 32);
+		unsigned int sar_width = sar >> 16;
+		unsigned int sar_height = sar & 0xffff;
+		printf("<li>aspect_ratio: <code>%u (%u:%u)</code></li>\n",
+			aspect_ratio_idc, sar_width, sar_height);
+	}
+	if (get_u1(CPB, &shift)) {
+		unsigned int overscan_appropriate_flag = get_u1(CPB, &shift);
+		printf("<li>overscan_appropriate_flag: <code>%x</code></li>\n",
+			overscan_appropriate_flag);
+	}
+	if (get_u1(CPB, &shift)) {
+		unsigned int video_format = get_uv(CPB, &shift, 3);
+		unsigned int video_full_range_flag = get_u1(CPB, &shift);
+		printf("<li>video_format: <code>%u (%s)</code></li>\n"
+			"<li>video_full_range_flag: <code>%x</code></li>\n",
+			video_format, video_format_names[video_format],
+			video_full_range_flag);
+		if (get_u1(CPB, &shift)) {
+			unsigned int u = get_uv(CPB, &shift, 24);
+			unsigned int colour_primaries = u >> 16;
+			unsigned int transfer_characteristics = (u >> 8) & 0xff;
+			unsigned int matrix_coeffs = u & 0xff;
+			printf("<li>colour_primaries: <code>%u</code></li>\n"
+				"<li>transfer_characteristics: <code>%u</code></li>\n"
+				"<li>matrix_coeffs: <code>%u</code></li>\n",
+				colour_primaries,
+				transfer_characteristics,
+				matrix_coeffs);
+		}
+	}
+	if (get_u1(CPB, &shift)) {
+		unsigned int chroma_sample_loc_type_top_field = get_ue(CPB, &shift, );
+		unsigned int chroma_sample_loc_type_bottom_field = get_ue(CPB, &shift, );
+		printf("<li>chroma_sample_loc_type_top_field: <code>%u</code></li>\n"
+			"<li>chroma_sample_loc_type_bottom_field: <code>%u</code></li>\n",
+			chroma_sample_loc_type_top_field,
+			chroma_sample_loc_type_bottom_field);
+	}
+	unsigned int neutral_chroma_indication_flag = get_u1(CPB, &shift);
+	unsigned int field_seq_flag = get_u1(CPB, &shift);
+	unsigned int frame_field_info_present_flag = get_u1(CPB, &shift);
+	unsigned int default_display_window_flag = get_u1(CPB, &shift);
+	printf("<li>neutral_chroma_indication_flag: <code>%x</code></li>\n"
+		"<li>field_seq_flag: <code>%x</code></li>\n"
+		"<li>frame_field_info_present_flag: <code>%x</code></li>\n"
+		"<li>default_display_window_flag: <code>%x</code></li>\n",
+		neutral_chroma_indication_flag,
+		field_seq_flag,
+		frame_field_info_present_flag,
+		default_display_window_flag);
+	if (default_display_window_flag) {
+		unsigned int def_disp_win_left_offset = get_ue(CPB, &shift, );
+		unsigned int def_disp_win_right_offset = get_ue(CPB, &shift, );
+		unsigned int def_disp_win_top_offset = get_ue(CPB, &shift, );
+		unsigned int def_disp_win_bottom_offset = get_ue(CPB, &shift, );
+		printf("<li>def_disp_win_left_offset: <code>%u</code></li>\n"
+			"<li>def_disp_win_right_offset: <code>%u</code></li>\n"
+			"<li>def_disp_win_top_offset: <code>%u</code></li>\n"
+			"<li>def_disp_win_bottom_offset: <code>%u</code></li>\n",
+			def_disp_win_left_offset,
+			def_disp_win_right_offset,
+			def_disp_win_top_offset,
+			def_disp_win_bottom_offset);
+	}
+	if (get_u1(CPB, &shift)) {
+		unsigned int vui_num_units_in_tick = get_uv(CPB, &shift, 32);
+		unsigned int vui_time_scale = get_uv(CPB, &shift, 32);
+		unsigned int vui_poc_proportional_to_timing_flag = get_u1(CPB, &shift);
+		printf("<li>vui_num_units_in_tick: <code>%u</code></li>\n"
+			"<li>vui_time_scale: <code>%u</code></li>\n"
+			"<li>vui_poc_proportional_to_timing_flag: <code>%x</code></li>\n",
+			vui_num_units_in_tick,
+			vui_time_scale,
+			vui_poc_proportional_to_timing_flag);
+		if (vui_poc_proportional_to_timing_flag) {
+			unsigned int vui_num_ticks_poc_diff_one = get_ue(CPB, &shift, 4294967294) + 1;
+			printf("<li>vui_num_ticks_poc_diff_one: <code>%u</code></li>\n",
+				vui_num_ticks_poc_diff_one);
+		}
+		if (get_u1(CPB, &shift))
+			shift = parse_hrd_parameters(CPB, shift, 1, max_sub_layers);
+	}
+	if (get_u1(CPB, &shift)){
+		unsigned int tiles_fixed_structure_flag = get_u1(CPB, &shift);
+		unsigned int motion_vectors_over_pic_boundaries_flag = get_u1(CPB, &shift);
+		unsigned int restricted_ref_pic_lists_flag = get_u1(CPB, &shift);
+		unsigned int min_spatial_segmentation_idc = get_ue(CPB, &shift, 4095);
+		unsigned int max_bytes_per_pic_denom = get_ue(CPB, &shift, 16);
+		unsigned int max_bits_per_min_cu_denom = get_ue(CPB, &shift, 16);
+		unsigned int log2_max_mv_length_horizontal = get_ue(CPB, &shift, 16);
+		unsigned int log2_max_mv_length_vertical = get_ue(CPB, &shift, 15);
+		printf("<li>tiles_fixed_structure_flag: <code>%x</code></li>\n"
+			"<li>motion_vectors_over_pic_boundaries_flag: <code>%x</code></li>\n"
+			"<li>restricted_ref_pic_lists_flag: <code>%x</code></li>\n"
+			"<li>min_spatial_segmentation_idc: <code>%u</code></li>\n"
+			"<li>max_bytes_per_pic_denom: <code>%u</code></li>\n"
+			"<li>max_bits_per_min_cu_denom: <code>%u</code></li>\n"
+			"<li>log2_max_mv_length_horizontal: <code>%u</code></li>\n"
+			"<li>log2_max_mv_length_vertical: <code>%u</code></li>\n",
+			tiles_fixed_structure_flag,
+			motion_vectors_over_pic_boundaries_flag,
+			restricted_ref_pic_lists_flag,
+			min_spatial_segmentation_idc,
+			max_bytes_per_pic_denom,
+			max_bits_per_min_cu_denom,
+			log2_max_mv_length_horizontal,
+			log2_max_mv_length_vertical);
+	}
 	return shift;
 }
 
@@ -890,12 +1121,11 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	}
 	s.pic_width_in_luma_samples = get_ue(r->CPB, &shift, 16888);
 	s.pic_height_in_luma_samples = get_ue(r->CPB, &shift, 16888);
-	unsigned int conformance_window_flag = get_u1(r->CPB, &shift);
 	printf("<li>pic_width_in_luma_samples: <code>%u</code></li>\n"
 		"<li>pic_height_in_luma_samples: <code>%u</code></li>\n",
 		s.pic_width_in_luma_samples,
 		s.pic_height_in_luma_samples);
-	if (conformance_window_flag) {
+	if (get_u1(CPB, &shift)) {
 		unsigned int shiftX = (s.ChromaArrayType == 1 || s.ChromaArrayType == 2);
 		unsigned int shiftY = (s.ChromaArrayType == 1);
 		s.conf_win_left_offset = min(get_ue32(r->CPB, &shift) << shiftX, s.pic_width_in_luma_samples);
@@ -960,8 +1190,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		s.max_transform_hierarchy_depth_intra,
 		scaling_list_enabled_flag);
 	if (scaling_list_enabled_flag) {
-		unsigned int sps_scaling_list_data_present_flag = get_u1(r->CPB, &shift);
-		if (!sps_scaling_list_data_present_flag) {
+		if (!get_u1(CPB, &shift)) {
 			memset(s.ScalingFactor4x4, 16, sizeof(s.ScalingFactor4x4));
 			for (unsigned int sizeId = 0; sizeId < 3; sizeId++) {
 				unsigned int num = (sizeId == 2) ? 2 : 6;
@@ -1034,13 +1263,12 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	}
 	s.temporal_mvp_enabled_flag = get_u1(r->CPB, &shift);
 	s.strong_intra_smoothing_enabled_flag = get_u1(r->CPB, &shift);
-	unsigned int vui_parameters_present_flag = get_u1(r->CPB, &shift);
 	printf("<li>sps_temporal_mvp_enabled_flag: <code>%x</code></li>\n"
 		"<li>strong_intra_smoothing_enabled_flag: <code>%x</code></li>\n",
 		s.temporal_mvp_enabled_flag,
 		s.strong_intra_smoothing_enabled_flag);
-	if (vui_parameters_present_flag)
-		shift = parse_vui_parameters(r->CPB, shift);
+	if (get_u1(CPB, &shift))
+		shift = parse_vui_parameters(r->CPB, shift, s.max_sub_layers);
 	unsigned int sps_extension_flag = get_u1(r->CPB, &shift);
 	printf("<li>sps_extension_flag: <code>%x</code></li>\n", sps_extension_flag);
 	if (sps_extension_flag && shift < lim)
@@ -1092,15 +1320,6 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 
 
 
-static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
-	unsigned int cprms_present_flag, unsigned int max_sub_layers)
-{
-	
-	return shift;
-}
-
-
-
 /**
  * This function currently only prints the VPS to stdout.
  */
@@ -1147,8 +1366,7 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 				i, j, layer_id_included_flag);
 		}
 	}
-	unsigned int vps_timing_info_present_flag = get_u1(r->CPB, &shift);
-	if (vps_timing_info_present_flag) {
+	if (get_u1(CPB, &shift)) {
 		unsigned int vps_num_units_in_tick = get_uv(r->CPB, &shift, 32);
 		unsigned int vps_time_scale = get_uv(r->CPB, &shift, 32);
 		unsigned int vps_poc_proportional_to_timing_flag = get_u1(r->CPB, &shift);
@@ -1254,6 +1472,8 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 		[33] = parse_sequence_parameter_set,
 		[34] = parse_picture_parameter_set,
 		[35] = parse_access_unit_delimiter,
+		[36] = parse_end_of_seq,
+		[37] = parse_end_of_bitstream,
 	};
 	
 	/* Allocate the CPB. */
