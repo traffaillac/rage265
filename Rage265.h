@@ -21,6 +21,7 @@ typedef struct {
 	unsigned int general_profile_space:2;
 	unsigned int general_progressive_source_flag:1;
 	unsigned int general_interlaced_source_flag:1;
+	unsigned int chroma_format_idc:2;
 	unsigned int ChromaArrayType:2;
 	unsigned int separate_colour_plane_flag:1;
 	unsigned int BitDepth_Y:4;

@@ -117,8 +117,9 @@ static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t *
 }
 
 static inline __attribute__((always_inline)) unsigned int get_u1(const uint8_t * restrict CPB, unsigned int * restrict shift) {
-	uint8_t buf = CPB[*shift / 8];
-	return (buf >> (7 - *shift++ % 8)) & 1;
+	unsigned int buf = CPB[*shift / 8] >> (7 - *shift % 8);
+	*shift += 1;
+	return buf & 1;
 }
 
 
@@ -254,8 +255,8 @@ typedef struct {
 	unsigned int collocated_from_l1_flag:1;
 	unsigned int collocated_ref_idx:4;
 	unsigned int MaxNumMergeCand:3;
-	int8_t delta_weights[15][3];
-	int8_t delta_offsets[15][3];
+	int8_t delta_weights[2][15][3];
+	int8_t delta_offsets[2][15][3];
 	uint8_t log2_weight_denom[3];
 	CABAC_ctx c;
 	Rage265_parameter_set p;

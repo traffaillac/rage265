@@ -45,8 +45,8 @@ static const uint8_t inter_ScalingFactor[64] __attribute__((aligned)) = {
 
 
 /**
- * This function parses a single short_term_ref_pic_set(), fills the proper
- * st_RPS entry, and returns the last shift value.
+ * Stores one short term reference picture set at position stRpsIdx, and returns
+ * the last shift value. Overflows for at most 30 set bits.
  */
 static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 	unsigned int stRpsIdx, const uint8_t *CPB, unsigned int shift,
@@ -94,6 +94,7 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 			p->max_dec_pic_buffering - 1);
 		unsigned int NumDeltaPocs = min(num_negative_pics + get_ue8(CPB, &shift),
 			p->max_dec_pic_buffering - 1);
+		// shift reaches lim here in the worst case of overflow
 		st_RPS[stRpsIdx][15] = (NumDeltaPocs << 8) | num_negative_pics;
 		int delta_poc_minus1 = -1;
 		for (unsigned int i = 0; i < NumDeltaPocs; i++) {
@@ -118,11 +119,14 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 
 
 /**
- * 8.3.2 Decoding process for reference picture set
+ * Parses the reference list part of a slice header into s->RefPicList, and
+ * returns the last shift value. unavailable receives the highest POC of any
+ * unavailable reference picture. used_for_reference is a bitfield set for each
+ * DPB entry in Curr or Foll. Overflows for at most 285 set bits.
  */
-static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
-	unsigned int *unavailable_poc, unsigned int *used_for_reference,
-	unsigned int *NumPocTotalCurr, const Rage265_ctx *r, unsigned int shift)
+static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_poc,
+	unsigned int *used_for_reference, unsigned int *NumPocTotalCurr,
+	Rage265_ctx *r, unsigned int shift)
 {
 	unsigned int short_term_ref_pic_set_sps_flag = get_u1(r->CPB, &shift);
 	printf("<li>short_term_ref_pic_set_sps_flag: <code>%x</code></li>\n",
@@ -154,7 +158,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 			*unavailable_poc = max(pocSt, *unavailable_poc);
 		} else {
 			*used_for_reference |= 1 << j;
-			if (used_by_curr_pic) {
+			if (st_RPS[idx] & 1) {
 				s->RefPicList[0][*NumPocTotalCurr++] = &r->DPB[j];
 				NumPocStCurrBefore += i < NumNegativePics;
 			}
@@ -166,16 +170,17 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 	}
 		
 	if (s->p.long_term_ref_pics_present_flag) {
+		unsigned int rem = s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8);
 		unsigned int num_long_term_sps = 0;
 		if (s->p.num_long_term_ref_pics_sps > 0) {
 			num_long_term_sps = min(get_ue8(r->CPB, &shift),
-				min(s->p.num_long_term_ref_pics_sps,
-				s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8)));
+				min(s->p.num_long_term_ref_pics_sps, rem));
 			printf("<li>num_long_term_sps: <code>%u</code></li>\n",
 				num_long_term_sps);
 		}
 		unsigned int num_long_term_pics = min(get_ue8(r->CPB, &shift),
-			s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8) - num_long_term_sps);
+			rem - num_long_term_sps);
+		// shift reaches lim here in the worst case of overflow
 		printf("<li>num_long_term_pics: <code>%u</code></li>\n",
 			num_long_term_pics);
 		unsigned int DeltaPocMsbCycleLt = 0;
@@ -198,7 +203,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 			}
 			if (get_u1(r->CPB, &shift)) {
 				DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
-				pocLt += (s->currPic.PicOrderCntVal & -MaxPicOrderCntLsb) -
+				pocLt += (s->currPic.PicOrderCntVal & (-1 << s->p.log2_max_pic_order_cnt_lsb)) -
 					(DeltaPocMsbCycleLt << s->p.log2_max_pic_order_cnt_lsb);
 			}
 			printf("<li>pocLt[%u]: <code>%u, %s</code></li>\n",
@@ -221,7 +226,12 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s,
 
 
 
+/**
+ * Updates s->RefPicList with the permutations present in the slice header, and
+ * returns the last shift value. Overflows for at most 122 set bits.
+ */
 static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uint8_t *CPB, unsigned int shift) {
+	// shift reaches lim here in the worst case of overflow
 	for (int l = 0; l < 2 - s->slice_type; l++) {
 		if (get_u1(CPB, &shift)) {
 			const Rage265_picture *list[s->p.num_ref_idx_active[l]];
@@ -241,12 +251,18 @@ static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uin
 
 
 
+/**
+ * Parses the prediction weights and offsets, and returns the last shift value.
+ * Overflows for at most 242 set bits.
+ */
 static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB, unsigned int shift) {
-	s->log2_weight_denom[0] = get_ue(r->CPB, &shift, 7);
+	// shift reaches lim here in the worst case of overflow
+	s->log2_weight_denom[0] = get_ue(CPB, &shift, 7);
 	printf("<li>luma_log2_weight_denom: <code>%u</code></li>\n",
 		s->log2_weight_denom[0]);
 	if (s->p.chroma_format_idc != 0) {
-		unsigned int codeNum = get_ue8(r->CPB, &shift);
+		// get_se done manually because bounds apply after an addition
+		unsigned int codeNum = get_ue8(CPB, &shift);
 		int abs = (codeNum + 1) / 2;
 		int sign = (codeNum % 2) - 1;
 		s->log2_weight_denom[1] = s->log2_weight_denom[2] = s->log2_weight_denom[0] +
@@ -262,25 +278,27 @@ static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB
 			get_uv(CPB, &shift, s->p.num_ref_idx_active[l]) : 0;
 		for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
 			if (luma_weight_flags & (1 << (s->p.num_ref_idx_active[l] - 1 - i))) {
-				s->delta_weights[i][0] = get_se(CPB, &shift, -128, 127);
-				s->delta_offsets[i][0] = get_se(CPB, &shift, -128, 127);
+				s->delta_weights[l][i][0] = get_se(CPB, &shift, -128, 127);
+				s->delta_offsets[l][i][0] = get_se(CPB, &shift, -128, 127);
 				printf("<li>delta_luma_weight_l%u[%u]: <code>%d</code></li>\n"
 					"<li>luma_offset_l%u[%u]: <code>%d</code></li>\n",
-					l, i, s->delta_weights[i][0],
-					l, i, s->delta_offsets[i][0]);
+					l, i, s->delta_weights[l][i][0],
+					l, i, s->delta_offsets[l][i][0]);
 			}
 			if (chroma_weight_flags & (1 << (s->p.num_ref_idx_active[l] - 1 - i))) {
 				for (unsigned int j = 0; j < 2; j++) {
-					s->delta_weights[i][1 + j] = get_se(CPB, &shift, -128, 127);
+					s->delta_weights[l][i][1 + j] = get_se(CPB, &shift, -128, 127);
+					// get_se done manually because bounds apply after a shift
 					unsigned int codeNum = get_ue32(CPB, &shift);
 					int abs = (codeNum + 1) / 2;
 					int sign = (codeNum % 2) - 1;
-					s->delta_offsets[i][1 + j] = min(max((abs ^ sign) - sign -
-						(s->delta_weights[i][1 + j] << (7 - s->log2_weight_denom[1])), -128, 127);
+					s->delta_offsets[l][i][1 + j] = min(max((abs ^ sign) - sign -
+						(s->delta_weights[l][i][1 + j] << (7 - s->log2_weight_denom[1])),
+						-128), 127);
 					printf("<li>delta_chroma_weight_l%u[%u][%u]: <code>%d</code></li>\n"
 						"<li>ChromaOffsetL%u[%u][%u]: <code>%d</code></li>\n",
-						l, i, j, s->delta_weights[i][1 + j],
-						l, i, j, s->delta_offsets[i][1 + j]);
+						l, i, j, s->delta_weights[l][i][1 + j],
+						l, i, j, s->delta_offsets[l][i][1 + j]);
 				}
 			}
 		}
@@ -290,10 +308,9 @@ static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB
 
 
 
-/**
- * Fills an array of samples with 1<<(BitDepth-1).
- */
+/** Fills an array of samples with 1<<(BitDepth-1). */
 static void paint_grey(uint8_t *buf, size_t len, unsigned int BitDepth) {
+	// 16 is the size of a 8bit 4:2:0 chroma block when MinCbLog2SizeY==3
 	typedef union { uint8_t q[16]; uint16_t h[8]; } Vect __attribute__((aligned(16)));
 	unsigned int grey = 1 << (BitDepth - 1);
 	Vect v = (BitDepth == 8) ? (Vect){.q = {[0 ... 15] = grey}} : (Vect){.h = {[0 ... 7] = grey}};
@@ -304,14 +321,16 @@ static void paint_grey(uint8_t *buf, size_t len, unsigned int BitDepth) {
 
 
 /**
- * This function parses a section_segment_header(), and calls
- * parse_slice_segment_data() if no error was detected.
+ * Copies a parameter set and parses a slice header into a Rage265_slice
+ * context, and yields decoding to parse_slice_segment_data(). The next picture
+ * to be output is returned. Overflows for at most 695 set bits.
  */
 static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned int lim) {
 	static const char * const slice_type_names[3] = {"B", "P", "I"};
 	static const char * const colour_plane_id_names[3] = {"Y", "Cb", "Cr"};
 	
 	unsigned int shift = 0;
+	// shift reaches lim here in the worst case of overflow
 	unsigned int first_slice_segment_in_pic_flag = get_u1(r->CPB, &shift);
 	printf("<li>first_slice_segment_in_pic_flag: <code>%x</code></li>\n",
 		first_slice_segment_in_pic_flag);
@@ -371,7 +390,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 			s.currPic.PicOrderCntVal = (r->prevPicOrderCntVal & -MaxPicOrderCntLsb) |
 				slice_pic_order_cnt_lsb;
 			if (r->prevPicOrderCntVal - s.currPic.PicOrderCntVal >= MaxPicOrderCntLsb / 2)
-				PicOrderCntVal += MaxPicOrderCntLsb;
+				s.currPic.PicOrderCntVal += MaxPicOrderCntLsb;
 			if (s.currPic.PicOrderCntVal - r->prevPicOrderCntVal > MaxPicOrderCntLsb / 2)
 				s.currPic.PicOrderCntVal -= MaxPicOrderCntLsb;
 			printf("<li>PicOrderCntVal: <code>%d</code></li>\n", s.currPic.PicOrderCntVal);
@@ -470,11 +489,14 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 	if (s.p.num_tile_columns > 1 || s.p.num_tile_rows > 1 ||
 		s.p.entropy_coding_sync_enabled_flag) {
 		/* To be refined once multi-threading is implemented. */
-		unsigned int num_entry_point_offsets = get_ue(r->CPB, &shift, 23188);
+		int num_entry_point_offsets = get_ue(r->CPB, &shift, 23188);
 		printf("<li>num_entry_point_offsets: <code>%u</code></li>\n",
 			num_entry_point_offsets);
 		if (num_entry_point_offsets > 0) {
 			unsigned int offset_len = get_ue(r->CPB, &shift, 31) + 1;
+			// This would require a huge safety suffix without this protection
+			num_entry_point_offsets = min(num_entry_point_offsets,
+				(int)(lim - shift) >> offset_len);
 			for (unsigned int i = 0; i < num_entry_point_offsets; i++) {
 				unsigned int entry_point_offset = get_uv(r->CPB, &shift, offset_len) + 1;
 				printf("<li>entry_point_offset[%u]: <code>%u</code></li>\n",
@@ -496,7 +518,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 	/* When some references are unavailable, create a grey picture for replacement. */
 	if (unavailable_poc > INT32_MIN) {
 		unsigned int i, avail = 0;
-		for (i = 0; i < s.p.max_dec_pic_buffering && &r->DPB[i].grey_picture; i++) {
+		for (i = 0; i < s.p.max_dec_pic_buffering && !r->DPB[i].grey_picture; i++) {
 			if (!r->DPB[i].needed_for_output && !(used_for_reference & (1 << i)))
 				avail = i;
 		}
@@ -505,11 +527,11 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 			r->DPB[i].needed_for_output = 0;
 			r->DPB[i].grey_picture = 1;
 			r->DPB[i].PicOrderCntVal = unavailable_poc;
-			size_t ctb_size = s.PicWidthInCtbsY * s.PicHeightInCtbsY * sizeof(Rage265_ctb);
+			size_t ctb_size = s.p.PicWidthInCtbsY * s.p.PicHeightInCtbsY * sizeof(Rage265_ctb);
 			memset(r->DPB[i].CTBs, 0, ctb_size);
-			paint_grey(r->DPB[i].image, s.image_offsets[1], s.BitDepth_Y);
-			paint_grey(r->DPB[i].image + s.image_offsets[1], s.image_offsets[3] -
-				s.image_offsets[1], s.BitDepth_C);
+			paint_grey(r->DPB[i].image, s.p.image_offsets[1], s.p.BitDepth_Y);
+			paint_grey(r->DPB[i].image + s.p.image_offsets[1], s.p.image_offsets[3] -
+				s.p.image_offsets[1], s.p.BitDepth_C);
 		}
 		used_for_reference |= 1 << i;
 		for (int l = 0; l < 2 - s.slice_type; l++) {
@@ -552,6 +574,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 
 
 
+/** Frees all internal structures and clears the Rage265_ctx. */
 static const Rage265_picture *parse_end_of_bitstream(Rage265_ctx *r, unsigned int lim) {
 	if (lim == 0) {
 		if (r->CPB != NULL)
@@ -565,8 +588,9 @@ static const Rage265_picture *parse_end_of_bitstream(Rage265_ctx *r, unsigned in
 
 
 
+/** Returns the next output picture if there is one, otherwise resets prevPicOrderCntVal. */
 static const Rage265_picture *parse_end_of_seq(Rage265_ctx *r, unsigned int lim) {
-	const Rage265_picture *output = NULL;
+	Rage265_picture *output = NULL;
 	if (lim == 0) {
 		for (unsigned int i = 0; i < r->SPS.max_dec_pic_buffering; i++) {
 			if (r->DPB[i].needed_for_output && (output == NULL ||
@@ -583,6 +607,7 @@ static const Rage265_picture *parse_end_of_seq(Rage265_ctx *r, unsigned int lim)
 
 
 
+/** Prints out an AUD. */
 static const Rage265_picture *parse_access_unit_delimiter(Rage265_ctx *r, unsigned int lim) {
 	static const char * const pic_type_names[8] = {"I", "P, I", "B, P, I", [3 ... 7] = "unknown"};
 	unsigned int pic_type = *r->CPB >> 5;
@@ -593,9 +618,14 @@ static const Rage265_picture *parse_access_unit_delimiter(Rage265_ctx *r, unsign
 
 
 
+/**
+ * Parses the scaling lists into p->ScalingFactorNxN, and returns the last shift
+ * value. Overflows for at most 1000 set bits.
+ */
 static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 	const uint8_t *CPB, unsigned int shift)
 {
+	// shift reaches lim here in the worst case of overflow
 	for (unsigned int matrixId = 0; matrixId < 6; matrixId++) {
 		printf("<li>ScalingList[0][%u]: <code>", matrixId);
 		if (!get_u1(CPB, &shift)) {
@@ -619,6 +649,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 			printf("<li>ScalingList[%u][%u]: <code>", sizeId + 1, matrixId);
 			if (!get_u1(CPB, &shift)) {
 				unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
+				// The address trick assumes no variable is inserted between the arrays
 				memcpy((&p->ScalingFactor8x8)[sizeId][matrixId],
 					(refMatrixId != matrixId) ? (&p->ScalingFactor8x8)[sizeId][refMatrixId] :
 					(matrixId < num / 2) ? intra_ScalingFactor : inter_ScalingFactor, 64);
@@ -647,8 +678,8 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 
 
 /**
- * This function parses the PPS into a copy of the current SPS, and stores it
- * if no error was detected.
+ * Parses the PPS into a copy of the current SPS, and returns NULL.
+ * Overflows for at most 1050 set bits.
  */
 static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsigned int lim) {
 	Rage265_parameter_set p = r->SPS;
@@ -730,6 +761,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 		p.colBd[p.num_tile_columns] = p.PicWidthInCtbsY;
 		p.rowBd[p.num_tile_rows] = p.PicHeightInCtbsY;
 		unsigned int uniform_spacing_flag = get_u1(r->CPB, &shift);
+		// shift reaches lim here in the worst case of overflow
 		printf("<li>num_tile_columns: <code>%u</code></li>\n"
 			"<li>num_tile_rows: <code>%u</code></li>\n"
 			"<li>uniform_spacing_flag: <code>%x</code></li>\n",
@@ -762,7 +794,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 	p.loop_filter_across_slices_enabled_flag = get_u1(r->CPB, &shift);
 	printf("<li>pps_loop_filter_across_slices_enabled_flag: <code>%x</code></li>\n",
 		p.loop_filter_across_slices_enabled_flag);
-	if (get_u1(CPB, &shift)) {
+	if (get_u1(r->CPB, &shift)) {
 		p.deblocking_filter_override_enabled_flag = get_u1(r->CPB, &shift);
 		p.deblocking_filter_disabled_flag = get_u1(r->CPB, &shift);
 		printf("<li>deblocking_filter_override_enabled_flag: <code>%x</code></li>\n"
@@ -778,7 +810,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 				p.tc_offset);
 		}
 	}
-	if (get_u1(CPB, &shift))
+	if (get_u1(r->CPB, &shift))
 		shift = parse_scaling_list_data(&p, r->CPB, shift);
 	p.lists_modification_present_flag = get_u1(r->CPB, &shift);
 	p.Log2ParMrgLevel = min(get_ue8(r->CPB, &shift) + 2, p.CtbLog2SizeY);
@@ -806,9 +838,11 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 
 
 
+/** Returns the last shift value. Overflows for at most CpbCnt*5 set bits. */
 static unsigned int parse_sub_layer_hrd_parameters(const uint8_t *CPB,
 	unsigned int shift, unsigned int CpbCnt, unsigned int sub_pic_hrd_params_present_flag)
 {
+	// shift reaches lim here in the worst case of overflow
 	for (unsigned int i = 0; i < CpbCnt; i++) {
 		unsigned int bit_rate_value = get_ue(CPB, &shift, 4294967294) + 1;
 		unsigned int cpb_size_value = get_ue(CPB, &shift, 4294967294) + 1;
@@ -835,6 +869,7 @@ static unsigned int parse_sub_layer_hrd_parameters(const uint8_t *CPB,
 
 
 
+/** Returns the last shift value. Overflows for at most 398 set bits. */
 static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
 	unsigned int cprms_present_flag, unsigned int max_sub_layers)
 {
@@ -862,8 +897,8 @@ static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
 					dpb_output_delay_du_length);
 			}
 			unsigned int scale = get_uv(CPB, &shift, 8);
-			unsigned int bit_rate_scale = u >> 4;
-			unsigned int cpb_size_scale = u & 0xf;
+			unsigned int bit_rate_scale = scale >> 4;
+			unsigned int cpb_size_scale = scale & 0xf;
 			printf("<li>bit_rate_scale: <code>%u</code></li>\n"
 				"<li>cpb_size_scale: <code>%u</code></li>\n",
 				bit_rate_scale,
@@ -911,6 +946,7 @@ static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
 			CpbCnt = get_ue(CPB, &shift, 31) + 1;
 			printf("<li>cpb_cnt[%u]: <code>%u</code></li>\n", i, CpbCnt);
 		}
+		// shift reaches lim here in the worst case of overflow
 		if (nal_hrd_parameters_present_flag)
 			shift = parse_sub_layer_hrd_parameters(CPB, shift, CpbCnt, sub_pic_hrd_params_present_flag);
 		if (vcl_hrd_parameters_present_flag)
@@ -922,6 +958,7 @@ static unsigned int parse_hrd_parameters(const uint8_t *CPB, unsigned int shift,
 
 
 
+/** Returns the last shift value. Overflows for at most 559 set bits. */
 static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
 	unsigned int max_sub_layers)
 {
@@ -930,8 +967,9 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
 		0x00500021, 0x0012000b, 0x000f000b, 0x00400021, 0x00a00063, 0x00040003,
 		0x00030002, 0x00020001};
 	static const char * const video_format_names[8] = {"Component", "PAL",
-		"NTSC", "SECAM", "MAC", [5 .. 7] = "Unspecified"};
+		"NTSC", "SECAM", "MAC", [5 ... 7] = "Unspecified"};
 	
+	// shift reaches lim here in the worst case of overflow
 	if (get_u1(CPB, &shift)) {
 		unsigned int aspect_ratio_idc = get_uv(CPB, &shift, 8);
 		unsigned int sar = ratio2sar[aspect_ratio_idc];
@@ -968,8 +1006,8 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
 		}
 	}
 	if (get_u1(CPB, &shift)) {
-		unsigned int chroma_sample_loc_type_top_field = get_ue(CPB, &shift, );
-		unsigned int chroma_sample_loc_type_bottom_field = get_ue(CPB, &shift, );
+		unsigned int chroma_sample_loc_type_top_field = get_ue(CPB, &shift, 5);
+		unsigned int chroma_sample_loc_type_bottom_field = get_ue(CPB, &shift, 5);
 		printf("<li>chroma_sample_loc_type_top_field: <code>%u</code></li>\n"
 			"<li>chroma_sample_loc_type_bottom_field: <code>%u</code></li>\n",
 			chroma_sample_loc_type_top_field,
@@ -988,10 +1026,10 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
 		frame_field_info_present_flag,
 		default_display_window_flag);
 	if (default_display_window_flag) {
-		unsigned int def_disp_win_left_offset = get_ue(CPB, &shift, );
-		unsigned int def_disp_win_right_offset = get_ue(CPB, &shift, );
-		unsigned int def_disp_win_top_offset = get_ue(CPB, &shift, );
-		unsigned int def_disp_win_bottom_offset = get_ue(CPB, &shift, );
+		unsigned int def_disp_win_left_offset = get_ue(CPB, &shift, 16887);
+		unsigned int def_disp_win_right_offset = get_ue(CPB, &shift, 16887);
+		unsigned int def_disp_win_top_offset = get_ue(CPB, &shift, 16887);
+		unsigned int def_disp_win_bottom_offset = get_ue(CPB, &shift, 16887);
 		printf("<li>def_disp_win_left_offset: <code>%u</code></li>\n"
 			"<li>def_disp_win_right_offset: <code>%u</code></li>\n"
 			"<li>def_disp_win_top_offset: <code>%u</code></li>\n"
@@ -1050,6 +1088,10 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
 
 
 
+/**
+ * Prints out the byte-aligned profile_tier_level() for the highest sub-layer,
+ * and returns the pointer past it. Overflows for at most 86 set bytes.
+ */
 static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const uint8_t *c) {
 	static const char * const general_profile_idc_names[32] = {"unknown", "Main",
 		"Main 10", "Main Still Picture", [4 ... 31] = "unknown"};
@@ -1062,6 +1104,7 @@ static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const u
 	unsigned int general_non_packed_constraint_flag = (c[5] >> 5) & 1;
 	unsigned int general_frame_only_constraint_flag = (c[5] >> 4) & 1;
 	unsigned int general_level_idc = c[11];
+	c += 12;
 	printf("<li%s>general_profile_space: <code>%u</code></li>\n"
 		"<li>general_tier_flag: <code>%x</code></li>\n"
 		"<li>general_profile_idc: <code>%u (%s profile)</code></li>\n"
@@ -1078,17 +1121,20 @@ static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const u
 		general_non_packed_constraint_flag,
 		general_frame_only_constraint_flag,
 		(float)general_level_idc / 30);
-	unsigned int sub_layer_flags = (c[12] << 8) | c[13];
-	/* Sub-layer selection must occur at the demux level, hence any such info is ignored. */
-	return c + 14 + 11 * __builtin_popcount(sub_layer_flags & 0xaaa0) +
-		__builtin_popcount(sub_layer_flags & 0x5550);
+	/* Sub-layer selection should occur at the demux level, hence any such info is ignored. */
+	if (p->max_sub_layers > 1) {
+		unsigned int sub_layer_flags = (c[0] << 8) | c[1];
+		c += 2 + 11 * __builtin_popcount(sub_layer_flags & 0xaaa0) +
+			__builtin_popcount(sub_layer_flags & 0x5550);
+	}
+	return c;
 }
 
 
 
 /**
- * This function parses the SPS into a Rage265_parameter_set structure, and
- * stores it if no error was detected.
+ * Parses the SPS into a Rage265_parameter_set structure, and returns NULL.
+ * Overflows for at most 2310 set bits.
  */
 static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsigned int lim) {
 	static const char * const chroma_format_idc_names[4] = {"4:0:0", "4:2:0", "4:2:2", "4:4:4"};
@@ -1100,6 +1146,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	unsigned int sps_video_parameter_set_id = r->CPB[0] >> 4;
 	s.max_sub_layers = min((r->CPB[0] >> 1) & 0x7, 6) + 1;
 	s.temporal_id_nesting_flag = r->CPB[0] & 1;
+	// shift reaches lim here in the worst case of overflow
 	printf("<li>sps_video_parameter_set_id: <code>%u</code></li>\n"
 		"<li>sps_max_sub_layers: <code>%u</code></li>\n"
 		"<li>sps_temporal_id_nesting_flag: <code>%x</code></li>\n",
@@ -1119,13 +1166,13 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		printf("<li>separate_colour_plane_flag: <code>%x</code></li>\n",
 			s.separate_colour_plane_flag);
 	}
-	s.pic_width_in_luma_samples = get_ue(r->CPB, &shift, 16888);
-	s.pic_height_in_luma_samples = get_ue(r->CPB, &shift, 16888);
+	s.pic_width_in_luma_samples = max(get_ue(r->CPB, &shift, 16888), 1);
+	s.pic_height_in_luma_samples = max(get_ue(r->CPB, &shift, 16888), 1);
 	printf("<li>pic_width_in_luma_samples: <code>%u</code></li>\n"
 		"<li>pic_height_in_luma_samples: <code>%u</code></li>\n",
 		s.pic_width_in_luma_samples,
 		s.pic_height_in_luma_samples);
-	if (get_u1(CPB, &shift)) {
+	if (get_u1(r->CPB, &shift)) {
 		unsigned int shiftX = (s.ChromaArrayType == 1 || s.ChromaArrayType == 2);
 		unsigned int shiftY = (s.ChromaArrayType == 1);
 		s.conf_win_left_offset = min(get_ue32(r->CPB, &shift) << shiftX, s.pic_width_in_luma_samples);
@@ -1190,7 +1237,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		s.max_transform_hierarchy_depth_intra,
 		scaling_list_enabled_flag);
 	if (scaling_list_enabled_flag) {
-		if (!get_u1(CPB, &shift)) {
+		if (!get_u1(r->CPB, &shift)) {
 			memset(s.ScalingFactor4x4, 16, sizeof(s.ScalingFactor4x4));
 			for (unsigned int sizeId = 0; sizeId < 3; sizeId++) {
 				unsigned int num = (sizeId == 2) ? 2 : 6;
@@ -1267,7 +1314,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		"<li>strong_intra_smoothing_enabled_flag: <code>%x</code></li>\n",
 		s.temporal_mvp_enabled_flag,
 		s.strong_intra_smoothing_enabled_flag);
-	if (get_u1(CPB, &shift))
+	if (get_u1(r->CPB, &shift))
 		shift = parse_vui_parameters(r->CPB, shift, s.max_sub_layers);
 	unsigned int sps_extension_flag = get_u1(r->CPB, &shift);
 	printf("<li>sps_extension_flag: <code>%x</code></li>\n", sps_extension_flag);
@@ -1275,10 +1322,10 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		shift = lim;
 	if (shift != lim)
 		printf("<li style=\"color: red\">Bitstream overflow (%d bits)</li>\n", shift - lim);
-	
-	/* Clear the r->CPB and reallocate the DPB when the image format changes. */
 	if (shift != lim || sps_seq_parameter_set_id > 0 || s.general_profile_space > 0)
 		return NULL;
+	
+	/* Clear the r->CPB and reallocate the DPB when the image format changes. */
 	s.pic_width_in_luma_samples &= -1 << s.MinCbLog2SizeY;
 	s.pic_height_in_luma_samples &= -1 << s.MinCbLog2SizeY;
 	unsigned int PicSizeInSamplesY = s.pic_width_in_luma_samples *
@@ -1305,8 +1352,8 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 			free(r->DPB[0].image);
 		r->DPB[0].image = calloc(s.max_dec_pic_buffering, s.image_offsets[3] + ctb_size);
 		for (unsigned int i = 0; i < s.max_dec_pic_buffering; i++) {
-			r->DPB[i].image = r->DPB[0].image + i * (image_offsets[3] + ctb_size);
-			r->DPB[i].CTBs = (Rage265_ctb *)(r->DPB[i].image + image_offsets[3]);
+			r->DPB[i].image = r->DPB[0].image + i * (s.image_offsets[3] + ctb_size);
+			r->DPB[i].CTBs = (Rage265_ctb *)(r->DPB[i].image + s.image_offsets[3]);
 			r->DPB[i].needed_for_output = 0;
 			r->DPB[i].grey_picture = 0;
 			r->DPB[i].PicOrderCntVal = INT32_MIN;
@@ -1315,32 +1362,31 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	}
 	r->SPS = s;
 	memcpy(r->short_term_RPSs, short_term_RPSs, sizeof(short_term_RPSs));
-	return NULL
+	return NULL;
 }
 
 
 
-/**
- * This function currently only prints the VPS to stdout.
- */
+/** Prints out the VPS and returns NULL. Overflows for at most 801 set bits. */
 static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned int lim) {
+	Rage265_parameter_set v;
 	unsigned int u = htobe16(*(uint16_t *)r->CPB);
 	unsigned int vps_video_parameter_set_id = u >> 12;
 	unsigned int vps_max_layers = ((u >> 4) & 0x3f) + 1;
-	unsigned int vps_max_sub_layers = min((u >> 1) & 0x7, 6) + 1;
+	v.max_sub_layers = min((u >> 1) & 0x7, 6) + 1;
 	unsigned int vps_temporal_id_nesting_flag = u & 1;
+	// shift reaches lim here in the worst case of overflow
 	printf("<li>vps_video_parameter_set_id: <code>%u</code></li>\n"
 		"<li>vps_max_layers: <code>%u</code></li>\n"
 		"<li>vps_max_sub_layers: <code>%u</code></li>\n"
 		"<li>vps_temporal_id_nesting_flag: <code>%x</code></li>\n",
 		vps_video_parameter_set_id,
 		vps_max_layers,
-		vps_max_sub_layers,
+		v.max_sub_layers,
 		vps_temporal_id_nesting_flag);
-	Rage265_parameter_set v;
-	unsigned int shift = 8 * (parse_profile_tier_level(&v, r->CPB + 32) - r->CPB);
+	unsigned int shift = 8 * (parse_profile_tier_level(&v, r->CPB + 4) - r->CPB);
 	unsigned int vps_sub_layer_ordering_info_present_flag = get_u1(r->CPB, &shift);
-	for (unsigned int i = (vps_max_sub_layers - 1) & -vps_sub_layer_ordering_info_present_flag; i < vps_max_sub_layers; i++) {
+	for (unsigned int i = (v.max_sub_layers - 1) & -vps_sub_layer_ordering_info_present_flag; i < v.max_sub_layers; i++) {
 		unsigned int vps_max_dec_pic_buffering = get_ue(r->CPB, &shift, 15) + 1;
 		unsigned int vps_max_num_reorder_pics = get_ue(r->CPB, &shift, 15);
 		unsigned int vps_max_latency_increase = get_ue(r->CPB, &shift, 4294967294) - 1;
@@ -1359,14 +1405,15 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 		"<li>vps_num_layer_sets: <code>%u</code></li>\n",
 		vps_max_layer_id,
 		vps_num_layer_sets);
-	for (unsigned int i = 1; i < vps_num_layer_sets; i++) {
+	for (unsigned int i = 1; i < vps_num_layer_sets && shift < lim; i++) {
+		printf("<li>layer_id_included_flags[%u]: <code>", i);
 		for (unsigned int j = 0; j <= vps_max_layer_id; j++) {
 			unsigned int layer_id_included_flag = get_u1(r->CPB, &shift);
-			printf("<ul><li>layer_id_included_flag[%u][%u]: <code>%x</code></li></ul>\n",
-				i, j, layer_id_included_flag);
+			printf("%x", layer_id_included_flag);
 		}
+		printf("</code></li>\n");
 	}
-	if (get_u1(CPB, &shift)) {
+	if (get_u1(r->CPB, &shift)) {
 		unsigned int vps_num_units_in_tick = get_uv(r->CPB, &shift, 32);
 		unsigned int vps_time_scale = get_uv(r->CPB, &shift, 32);
 		unsigned int vps_poc_proportional_to_timing_flag = get_u1(r->CPB, &shift);
@@ -1384,7 +1431,7 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 		unsigned int vps_num_hrd_parameters = get_ue(r->CPB, &shift, 1024);
 		printf("<li>vps_num_hrd_parameters: <code>%u</code></li>\n",
 			vps_num_hrd_parameters);
-		for (unsigned int i = 0; i < vps_num_hrd_parameters; i++) {
+		for (unsigned int i = 0; i < vps_num_hrd_parameters && shift < lim; i++) {
 			unsigned int hrd_layer_set_idx = get_ue(r->CPB, &shift, 1023);
 			printf("<ul>\n"
 				"<li>hrd_layer_set_idx[%u]: <code>%u</code></li>\n",
@@ -1392,7 +1439,7 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 			unsigned int cprms_present_flag = 0;
 			if (i > 0)
 				cprms_present_flag = get_u1(r->CPB, &shift);
-			shift = parse_hrd_parameters(r->CPB, shift, cprms_present_flag, vps_max_sub_layers);
+			shift = parse_hrd_parameters(r->CPB, shift, cprms_present_flag, v.max_sub_layers);
 			printf("</ul>\n");
 		}
 	}
@@ -1407,9 +1454,7 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 
 
 
-/**
- * Find the start of the next 00 00 0n pattern, returning len if none was found.
- */
+/** Find the start of the next 00 00 0n pattern, returning len if none was found. */
 #ifdef __SSSE3__
 size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
 	ptrdiff_t chunk = (uint8_t *)((uintptr_t)buf & -sizeof(__m128i)) - buf;
@@ -1431,9 +1476,7 @@ size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
 
 
 
-/**
- * Parse a NAL unit, returning the next picture to output or NULL.
- */
+/** Parses a NAL unit, returning the next picture to output or NULL. */
 const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, size_t len) {
 	static const char * const nal_unit_type_names[64] = {
 		[0] = "Trailing non-reference picture",
@@ -1467,21 +1510,21 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 	};
 	typedef const Rage265_picture *(*Parser)(Rage265_ctx *, unsigned int);
 	static const Parser parse_nal_unit[64] = {
-		[0 ... 21] = parse_slice_segment_layer,
+		//[0 ... 21] = parse_slice_segment_layer,
 		[32] = parse_video_parameter_set,
-		[33] = parse_sequence_parameter_set,
-		[34] = parse_picture_parameter_set,
-		[35] = parse_access_unit_delimiter,
-		[36] = parse_end_of_seq,
-		[37] = parse_end_of_bitstream,
+		//[33] = parse_sequence_parameter_set,
+		//[34] = parse_picture_parameter_set,
+		//[35] = parse_access_unit_delimiter,
+		//[36] = parse_end_of_seq,
+		//[37] = parse_end_of_bitstream,
 	};
 	
 	/* Allocate the CPB. */
 	if (len < 2)
 		return NULL;
-	const unsigned int suffix_size = 128;
+	const unsigned int suffix_size = 289; // largest overflow for a SPS
 	size_t CPB_size = len - 2 + suffix_size;
-	if (CPB_size > 800000000 / 8 + suffix_size) { // Level 6.2, High tier
+	if (CPB_size > 800000000 / 8 + suffix_size) {
 		CPB_size = 800000000 / 8 + suffix_size;
 		len = 800000000 / 8;
 	}
@@ -1507,7 +1550,7 @@ const Rage265_picture *Rage265_parse_NAL(Rage265_ctx *r, const uint8_t *buf, siz
 	
 	/* Trim every cabac_zero_word, delimit the SODB, and append the safety suffix. */
 	while (*dst == 0)
-		dst -= 2;
+		dst--;
 	unsigned int lim = 8 * (dst - r->CPB) + 7 - __builtin_ctz(*dst);
 	memset(dst + 1, 0xff, suffix_size);
 	
