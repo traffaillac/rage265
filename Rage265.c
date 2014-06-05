@@ -58,7 +58,7 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 	if (inter_ref_pic_set_prediction_flag) {
 		unsigned int RefRpsIdx = stRpsIdx - 1;
 		if (stRpsIdx == num_short_term_ref_pic_sets)
-			RefRpsIdx -= min(get_ue32(CPB, &shift), RefRpsIdx);
+			RefRpsIdx -= umin(get_ue_unsafe(CPB, &shift, 63), RefRpsIdx);
 		unsigned int NumNegativePics = st_RPS[RefRpsIdx][15] & 0xff;
 		unsigned int NumDeltaPocs = st_RPS[RefRpsIdx][15] >> 8;
 		unsigned int delta_rps_sign = get_u1(CPB, &shift);
@@ -82,7 +82,7 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 			else if (j > NumNegativePics)
 				dPoc += (st_RPS[RefRpsIdx][j - 1] >> 1) + 1;
 			if (((use_delta_flags >> j) & 1) && dPoc != 0) {
-				st_RPS[stRpsIdx][i++] = (min(abs(dPoc) - 1, 32767) << 1) |
+				st_RPS[stRpsIdx][i++] = (umin(abs(dPoc) - 1, 32767) << 1) |
 					((used_by_curr_pic_flags >> j) & 1);
 				if (dPoc < 0)
 					k = i;
@@ -90,9 +90,9 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 		}
 		st_RPS[stRpsIdx][15] = (i << 8) | k;
 	} else {
-		unsigned int num_negative_pics = min(get_ue8(CPB, &shift),
+		unsigned int num_negative_pics = umin(get_ue_unsafe(CPB, &shift, 15),
 			p->max_dec_pic_buffering - 1);
-		unsigned int NumDeltaPocs = min(num_negative_pics + get_ue8(CPB, &shift),
+		unsigned int NumDeltaPocs = umin(num_negative_pics + get_ue_unsafe(CPB, &shift, 15),
 			p->max_dec_pic_buffering - 1);
 		// shift reaches lim here in the worst case of overflow
 		st_RPS[stRpsIdx][15] = (NumDeltaPocs << 8) | num_negative_pics;
@@ -100,7 +100,7 @@ static unsigned int parse_short_term_ref_pic_set(uint16_t (*st_RPS)[16],
 		for (unsigned int i = 0; i < NumDeltaPocs; i++) {
 			if (i == num_negative_pics)
 				delta_poc_minus1 = -1;
-			delta_poc_minus1 = min(delta_poc_minus1 + get_ue32(CPB, &shift) + 1, 32767);
+			delta_poc_minus1 = umin(delta_poc_minus1 + get_ue_unsafe(CPB, &shift, 32767) + 1, 32767);
 			unsigned int used_by_curr_pic_flag = get_u1(CPB, &shift);
 			unsigned int j = (i < num_negative_pics) ? num_negative_pics - i - 1 : i;
 			st_RPS[stRpsIdx][j] = (delta_poc_minus1 << 1) | used_by_curr_pic_flag;
@@ -138,7 +138,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_p
 			short_term_ref_pic_set_idx, r->CPB, shift,
 			short_term_ref_pic_set_idx, &s->p);
 	} else if (s->p.num_short_term_ref_pic_sets > 1) {
-		short_term_ref_pic_set_idx = min(get_uv(r->CPB, &shift,
+		short_term_ref_pic_set_idx = umin(get_uv(r->CPB, &shift,
 			WORD_BIT - __builtin_clz(s->p.num_short_term_ref_pic_sets - 1)),
 			s->p.num_short_term_ref_pic_sets);
 		printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
@@ -173,12 +173,12 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_p
 		unsigned int rem = s->p.max_dec_pic_buffering - 1 - (st_RPS[15] >> 8);
 		unsigned int num_long_term_sps = 0;
 		if (s->p.num_long_term_ref_pics_sps > 0) {
-			num_long_term_sps = min(get_ue8(r->CPB, &shift),
-				min(s->p.num_long_term_ref_pics_sps, rem));
+			num_long_term_sps = umin(get_ue_unsafe(r->CPB, &shift, 15),
+				umin(s->p.num_long_term_ref_pics_sps, rem));
 			printf("<li>num_long_term_sps: <code>%u</code></li>\n",
 				num_long_term_sps);
 		}
-		unsigned int num_long_term_pics = min(get_ue8(r->CPB, &shift),
+		unsigned int num_long_term_pics = umin(get_ue_unsafe(r->CPB, &shift, 15),
 			rem - num_long_term_sps);
 		// shift reaches lim here in the worst case of overflow
 		printf("<li>num_long_term_pics: <code>%u</code></li>\n",
@@ -189,7 +189,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_p
 			if (i < num_long_term_sps) {
 				unsigned int lt_idx_sps = 0;
 				if (s->p.num_long_term_ref_pics_sps > 1) {
-					unsigned int lt_idx_sps = min(get_uv(r->CPB, &shift,
+					unsigned int lt_idx_sps = umin(get_uv(r->CPB, &shift,
 						WORD_BIT - __builtin_clz(s->p.num_long_term_ref_pics_sps - 1)),
 						s->p.num_long_term_ref_pics_sps - 1);
 				}
@@ -202,7 +202,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_p
 				used_by_curr_pic_lt_flag = get_u1(r->CPB, &shift);
 			}
 			if (get_u1(r->CPB, &shift)) {
-				DeltaPocMsbCycleLt += get_ue64(r->CPB, &shift);
+				DeltaPocMsbCycleLt += get_ue_unsafe(r->CPB, &shift, 1 << 28);
 				pocLt += (s->currPic.PicOrderCntVal & (-1 << s->p.log2_max_pic_order_cnt_lsb)) -
 					(DeltaPocMsbCycleLt << s->p.log2_max_pic_order_cnt_lsb);
 			}
@@ -236,7 +236,7 @@ static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uin
 		if (get_u1(CPB, &shift)) {
 			const Rage265_picture *list[s->p.num_ref_idx_active[l]];
 			for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
-				unsigned int list_entry = min(get_uv(CPB, &shift,
+				unsigned int list_entry = umin(get_uv(CPB, &shift,
 					WORD_BIT - __builtin_clz(s->p.num_ref_idx_active[l] - 1)),
 					s->p.num_ref_idx_active[l]);
 				list[i] = s->RefPicList[l][list_entry];
@@ -261,14 +261,8 @@ static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB
 	printf("<li>luma_log2_weight_denom: <code>%u</code></li>\n",
 		s->log2_weight_denom[0]);
 	if (s->p.chroma_format_idc != 0) {
-		// get_se done manually because bounds apply after an addition
-		unsigned int codeNum = get_ue8(CPB, &shift);
-		int abs = (codeNum + 1) / 2;
-		int sign = (codeNum % 2) - 1;
-		s->log2_weight_denom[1] = s->log2_weight_denom[2] = s->log2_weight_denom[0] +
-			((abs ^ sign) - sign);
-		if (s->log2_weight_denom[1] > 7) // unsigned min
-			s->log2_weight_denom[1] = 7;
+		s->log2_weight_denom[1] = s->log2_weight_denom[2] =
+			umin(s->log2_weight_denom[0] + get_se_unsafe(CPB, &shift, -7, 7), 7);
 		printf("<li>ChromaLog2WeightDenom: <code>%u</code></li>\n",
 			s->log2_weight_denom[1]);
 	}
@@ -288,13 +282,8 @@ static unsigned int parse_pred_weight_table(Rage265_slice *s, const uint8_t *CPB
 			if (chroma_weight_flags & (1 << (s->p.num_ref_idx_active[l] - 1 - i))) {
 				for (unsigned int j = 0; j < 2; j++) {
 					s->delta_weights[l][i][1 + j] = get_se(CPB, &shift, -128, 127);
-					// get_se done manually because bounds apply after a shift
-					unsigned int codeNum = get_ue32(CPB, &shift);
-					int abs = (codeNum + 1) / 2;
-					int sign = (codeNum % 2) - 1;
-					s->delta_offsets[l][i][1 + j] = min(max((abs ^ sign) - sign -
-						(s->delta_weights[l][i][1 + j] << (7 - s->log2_weight_denom[1])),
-						-128), 127);
+					s->delta_offsets[l][i][1 + j] = min(max(get_se_unsafe(CPB, &shift, -512, 511) -
+						(s->delta_weights[l][i][1 + j] << (7 - s->log2_weight_denom[1])), -128), 127);
 					printf("<li>delta_chroma_weight_l%u[%u][%u]: <code>%d</code></li>\n"
 						"<li>ChromaOffsetL%u[%u][%u]: <code>%d</code></li>\n",
 						l, i, j, s->delta_weights[l][i][1 + j],
@@ -355,7 +344,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 		}
 		unsigned int last_ctb = s.p.PicWidthInCtbsY * s.p.PicHeightInCtbsY - 1;
 		if (last_ctb > 0) {
-			unsigned int slice_segment_address = min(get_uv(r->CPB, &shift,
+			unsigned int slice_segment_address = umin(get_uv(r->CPB, &shift,
 				WORD_BIT - __builtin_clz(last_ctb)), last_ctb);
 			s.ctb_x = slice_segment_address % s.p.PicWidthInCtbsY;
 			s.ctb_y = slice_segment_address / s.p.PicWidthInCtbsY;
@@ -438,7 +427,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 						s.collocated_from_l1_flag ^ 1);
 				}
 				if (s.p.num_ref_idx_active[s.collocated_from_l1_flag] > 1) {
-					s.collocated_ref_idx = min(get_ue8(r->CPB, &shift),
+					s.collocated_ref_idx = umin(get_ue_unsafe(r->CPB, &shift, 14),
 						s.p.num_ref_idx_active[s.collocated_from_l1_flag] - 1);
 					printf("<li>collocated_ref_idx: <code>%u</code></li>\n",
 						s.collocated_ref_idx);
@@ -450,10 +439,8 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
 			printf("<li>MaxNumMergeCand: <code>%u</code></li>\n",
 				s.MaxNumMergeCand);
 		}
-		unsigned int codeNum = get_ue32(r->CPB, &shift);
-		unsigned int abs = (codeNum + 1) / 2;
-		unsigned int sign = (codeNum % 2) - 1;
-		s.p.Qp = min(max(s.p.Qp + (abs ^ sign) - sign, -s.p.QpBdOffset_Y), 51);
+		int slice_qp_delta = get_se_unsafe(r->CPB, &shift, -87, 87);
+		s.p.Qp = min(max(s.p.Qp + slice_qp_delta, -s.p.QpBdOffset_Y), 51);
 		printf("<li>SliceQp<sub>Y</sub>: <code>%d</code></li>\n", s.p.Qp);
 		if (s.p.pps_slice_chroma_qp_offsets_present_flag) {
 			s.p.cb_qp_offset = get_se(r->CPB, &shift, -12, 12);
@@ -629,7 +616,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 	for (unsigned int matrixId = 0; matrixId < 6; matrixId++) {
 		printf("<li>ScalingList[0][%u]: <code>", matrixId);
 		if (!get_u1(CPB, &shift)) {
-			unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
+			unsigned int refMatrixId = matrixId - umin(get_ue_unsafe(CPB, &shift, 6), matrixId);
 			if (refMatrixId != matrixId)
 				memcpy(p->ScalingFactor4x4[matrixId], p->ScalingFactor4x4[refMatrixId], 16);
 			else
@@ -648,7 +635,7 @@ static unsigned int parse_scaling_list_data(Rage265_parameter_set *p,
 		for (unsigned int matrixId = 0; matrixId < num; matrixId++) {
 			printf("<li>ScalingList[%u][%u]: <code>", sizeId + 1, matrixId);
 			if (!get_u1(CPB, &shift)) {
-				unsigned int refMatrixId = matrixId - min(get_ue8(CPB, &shift), matrixId);
+				unsigned int refMatrixId = matrixId - umin(get_ue_unsafe(CPB, &shift, 6), matrixId);
 				// The address trick assumes no variable is inserted between the arrays
 				memcpy((&p->ScalingFactor8x8)[sizeId][matrixId],
 					(refMatrixId != matrixId) ? (&p->ScalingFactor8x8)[sizeId][refMatrixId] :
@@ -724,7 +711,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 		p.transform_skip_enabled_flag,
 		p.cu_qp_delta_enabled_flag);
 	if (p.cu_qp_delta_enabled_flag) {
-		p.Log2MinCuQpDeltaSize = max(p.CtbLog2SizeY - get_ue8(r->CPB, &shift),
+		p.Log2MinCuQpDeltaSize = umax(p.CtbLog2SizeY - get_ue_unsafe(r->CPB, &shift, 3),
 			p.MinCbLog2SizeY);
 		printf("<li>Log2MinCuQpDeltaSize: <code>%u</code></li>\n",
 			p.Log2MinCuQpDeltaSize);
@@ -756,8 +743,8 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 	p.colBd[1] = p.PicWidthInCtbsY;
 	p.rowBd[1] = p.PicHeightInCtbsY;
 	if (tiles_enabled_flag) {
-		p.num_tile_columns = min(get_ue(r->CPB, &shift, 21) + 1, p.PicWidthInCtbsY);
-		p.num_tile_rows = min(get_ue(r->CPB, &shift, 19) + 1, p.PicHeightInCtbsY);
+		p.num_tile_columns = umin(get_ue(r->CPB, &shift, 21) + 1, p.PicWidthInCtbsY);
+		p.num_tile_rows = umin(get_ue(r->CPB, &shift, 19) + 1, p.PicHeightInCtbsY);
 		p.colBd[p.num_tile_columns] = p.PicWidthInCtbsY;
 		p.rowBd[p.num_tile_rows] = p.PicHeightInCtbsY;
 		unsigned int uniform_spacing_flag = get_u1(r->CPB, &shift);
@@ -775,13 +762,13 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 				p.rowBd[i] = i * p.PicHeightInCtbsY / p.num_tile_rows;
 		} else {
 			for (unsigned int i = 1; i < p.num_tile_columns; i++) {
-				unsigned int column_width = min(get_ue32(r->CPB, &shift) + 1,
+				unsigned int column_width = umin(get_ue_unsafe(r->CPB, &shift, 1055) + 1,
 					p.PicWidthInCtbsY - p.colBd[i - 1] - (p.num_tile_columns - i));
 				p.colBd[i] = p.colBd[i - 1] + column_width;
 				printf("<li>column_width[%u]: <code>%u</code></li>\n", i - 1, column_width);
 			}
 			for (unsigned int i = 1; i < p.num_tile_rows; i++) {
-				unsigned int row_height = min(get_ue32(r->CPB, &shift) + 1,
+				unsigned int row_height = umin(get_ue_unsafe(r->CPB, &shift, 1055) + 1,
 					p.PicHeightInCtbsY - p.rowBd[i - 1] - (p.num_tile_rows - i));
 				p.rowBd[i] = p.rowBd[i - 1] + row_height;
 				printf("<li>row_height[%u]: <code>%u</code></li>\n", i - 1, row_height);
@@ -813,7 +800,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
 	if (get_u1(r->CPB, &shift))
 		shift = parse_scaling_list_data(&p, r->CPB, shift);
 	p.lists_modification_present_flag = get_u1(r->CPB, &shift);
-	p.Log2ParMrgLevel = min(get_ue8(r->CPB, &shift) + 2, p.CtbLog2SizeY);
+	p.Log2ParMrgLevel = umin(get_ue_unsafe(r->CPB, &shift, 4) + 2, p.CtbLog2SizeY);
 	p.slice_segment_header_extension_present_flag = get_u1(r->CPB, &shift);
 	unsigned int pps_extension_flag = get_u1(r->CPB, &shift);
 	printf("<li>lists_modification_present_flag: <code>%x</code></li>\n"
@@ -1144,7 +1131,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	s.num_tile_rows = 1;
 	s.loop_filter_across_tiles_enabled_flag = 1;
 	unsigned int sps_video_parameter_set_id = r->CPB[0] >> 4;
-	s.max_sub_layers = min((r->CPB[0] >> 1) & 0x7, 6) + 1;
+	s.max_sub_layers = umin((r->CPB[0] >> 1) & 0x7, 6) + 1;
 	s.temporal_id_nesting_flag = r->CPB[0] & 1;
 	// shift reaches lim here in the worst case of overflow
 	printf("<li>sps_video_parameter_set_id: <code>%u</code></li>\n"
@@ -1166,8 +1153,8 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		printf("<li>separate_colour_plane_flag: <code>%x</code></li>\n",
 			s.separate_colour_plane_flag);
 	}
-	s.pic_width_in_luma_samples = max(get_ue(r->CPB, &shift, 16888), 1);
-	s.pic_height_in_luma_samples = max(get_ue(r->CPB, &shift, 16888), 1);
+	s.pic_width_in_luma_samples = umax(get_ue(r->CPB, &shift, 16888), 1);
+	s.pic_height_in_luma_samples = umax(get_ue(r->CPB, &shift, 16888), 1);
 	printf("<li>pic_width_in_luma_samples: <code>%u</code></li>\n"
 		"<li>pic_height_in_luma_samples: <code>%u</code></li>\n",
 		s.pic_width_in_luma_samples,
@@ -1175,10 +1162,12 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 	if (get_u1(r->CPB, &shift)) {
 		unsigned int shiftX = (s.ChromaArrayType == 1 || s.ChromaArrayType == 2);
 		unsigned int shiftY = (s.ChromaArrayType == 1);
-		s.conf_win_left_offset = min(get_ue32(r->CPB, &shift) << shiftX, s.pic_width_in_luma_samples);
-		s.conf_win_right_offset = min(get_ue32(r->CPB, &shift) << shiftX, s.pic_width_in_luma_samples - s.conf_win_left_offset);
-		s.conf_win_top_offset = min(get_ue32(r->CPB, &shift) << shiftY, s.pic_height_in_luma_samples);
-		s.conf_win_bottom_offset = min(get_ue32(r->CPB, &shift) << shiftY, s.pic_height_in_luma_samples - s.conf_win_top_offset);
+		unsigned int limX = (s.pic_width_in_luma_samples - 1) >> shiftX;
+		unsigned int limY = (s.pic_height_in_luma_samples - 1) >> shiftY;
+		s.conf_win_left_offset = umin(get_ue_unsafe(r->CPB, &shift, 16887), limX) << shiftX;
+		s.conf_win_right_offset = umin(get_ue_unsafe(r->CPB, &shift, 16887), limX - s.conf_win_left_offset) << shiftX;
+		s.conf_win_top_offset = umin(get_ue_unsafe(r->CPB, &shift, 16887), limY) << shiftY;
+		s.conf_win_bottom_offset = umin(get_ue_unsafe(r->CPB, &shift, 16887), limY - s.conf_win_top_offset) << shiftY;
 		printf("<li>conf_win_left_offset: <code>%u</code></li>\n"
 			"<li>conf_win_right_offset: <code>%u</code></li>\n"
 			"<li>conf_win_top_offset: <code>%u</code></li>\n"
@@ -1214,13 +1203,17 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 			i, sps_max_latency_increase);
 	}
 	s.MinCbLog2SizeY = get_ue(r->CPB, &shift, 3) + 3;
-	s.CtbLog2SizeY = min(max(s.MinCbLog2SizeY + get_ue8(r->CPB, &shift), 4), 6);
+	s.CtbLog2SizeY = umin(umax(s.MinCbLog2SizeY + get_ue_unsafe(r->CPB, &shift, 3), 4), 6);
 	s.PicWidthInCtbsY = s.pic_width_in_luma_samples >> s.CtbLog2SizeY;
 	s.PicHeightInCtbsY = s.pic_height_in_luma_samples >> s.CtbLog2SizeY;
-	s.Log2MinTrafoSize = min(get_ue8(r->CPB, &shift) + 2, min(s.MinCbLog2SizeY, 5));
-	s.Log2MaxTrafoSize = min(s.Log2MinTrafoSize + get_ue8(r->CPB, &shift), min(s.CtbLog2SizeY, 5));
-	s.max_transform_hierarchy_depth_inter = min(get_ue8(r->CPB, &shift), s.CtbLog2SizeY - s.Log2MinTrafoSize);
-	s.max_transform_hierarchy_depth_intra = min(get_ue8(r->CPB, &shift), s.CtbLog2SizeY - s.Log2MinTrafoSize);
+	s.Log2MinTrafoSize = umin(get_ue_unsafe(r->CPB, &shift, 3) + 2,
+		umin(s.MinCbLog2SizeY, 5));
+	s.Log2MaxTrafoSize = umin(s.Log2MinTrafoSize + get_ue_unsafe(r->CPB, &shift, 3),
+		umin(s.CtbLog2SizeY, 5));
+	s.max_transform_hierarchy_depth_inter = umin(get_ue_unsafe(r->CPB, &shift, 4),
+		s.CtbLog2SizeY - s.Log2MinTrafoSize);
+	s.max_transform_hierarchy_depth_intra = umin(get_ue_unsafe(r->CPB, &shift, 4),
+		s.CtbLog2SizeY - s.Log2MinTrafoSize);
 	unsigned int scaling_list_enabled_flag = get_u1(r->CPB, &shift);
 	printf("<li>MinCbLog2SizeY: <code>%u</code></li>\n"
 		"<li>CtbLog2SizeY: <code>%u</code></li>\n"
@@ -1266,10 +1259,12 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
 		pcm_enabled_flag);
 	if (pcm_enabled_flag) {
 		unsigned int u = get_uv(r->CPB, &shift, 8);
-		s.PcmBitDepth_Y = min((u >> 4) + 1, s.BitDepth_Y);
-		s.PcmBitDepth_C = min((u & 0xf) + 1, s.BitDepth_C);
-		s.Log2MinIpcmCbSizeY = min(max(get_ue8(r->CPB, &shift) + 3, s.MinCbLog2SizeY), min(s.CtbLog2SizeY, 5));
-		s.Log2MaxIpcmCbSizeY = min(s.Log2MinIpcmCbSizeY + get_ue8(r->CPB, &shift), min(s.CtbLog2SizeY, 5));
+		s.PcmBitDepth_Y = umin((u >> 4) + 1, s.BitDepth_Y);
+		s.PcmBitDepth_C = umin((u & 0xf) + 1, s.BitDepth_C);
+		s.Log2MinIpcmCbSizeY = umin(umax(get_ue_unsafe(r->CPB, &shift, 2) + 3,
+			s.MinCbLog2SizeY), umin(s.CtbLog2SizeY, 5));
+		s.Log2MaxIpcmCbSizeY = umin(s.Log2MinIpcmCbSizeY + get_ue_unsafe(r->CPB, &shift, 2),
+			umin(s.CtbLog2SizeY, 5));
 		s.pcm_loop_filter_disabled_flag = get_u1(r->CPB, &shift);
 		printf("<li>PcmBitDepth<sub>Y</sub>: <code>%u</code></li>\n"
 			"<li>PcmBitDepth<sub>C</sub>: <code>%u</code></li>\n"
@@ -1373,7 +1368,7 @@ static const Rage265_picture *parse_video_parameter_set(Rage265_ctx *r, unsigned
 	unsigned int u = htobe16(*(uint16_t *)r->CPB);
 	unsigned int vps_video_parameter_set_id = u >> 12;
 	unsigned int vps_max_layers = ((u >> 4) & 0x3f) + 1;
-	v.max_sub_layers = min((u >> 1) & 0x7, 6) + 1;
+	v.max_sub_layers = umin((u >> 1) & 0x7, 6) + 1;
 	unsigned int vps_temporal_id_nesting_flag = u & 1;
 	// shift reaches lim here in the worst case of overflow
 	printf("<li>vps_video_parameter_set_id: <code>%u</code></li>\n"
@@ -1463,7 +1458,7 @@ size_t Rage265_find_start_code(const uint8_t *buf, size_t len, unsigned int n) {
 		if ((_mm_movemask_epi8(_mm_cmpeq_epi8(*(__m128i *)(buf + chunk),
 			_mm_setzero_si128())) & 0xaaaa) == 0)
 			continue;
-		size_t lim = min(chunk + sizeof(__m128i) + 2, len);
+		size_t lim = umin(chunk + sizeof(__m128i) + 2, len);
 		for (unsigned int start_code = -1; u < lim; u++) {
 			start_code = ((start_code & 0xffff) << 8) | buf[u];
 			if (start_code == n)
