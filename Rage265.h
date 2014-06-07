@@ -77,7 +77,7 @@ typedef struct {
 	unsigned int lists_modification_present_flag:1;
 	unsigned int Log2ParMrgLevel:3;
 	unsigned int slice_segment_header_extension_present_flag:1;
-	uint32_t image_offsets[4]; // in bytes, 27 significant bits
+	uint32_t image_offsets[4]; // in samples, 27 significant bits
 	uint16_t pic_width_in_luma_samples; // 15 significant bits
 	uint16_t pic_height_in_luma_samples;
 	uint16_t conf_win_left_offset; // in luma samples
@@ -99,7 +99,7 @@ typedef struct {
 	
 } __attribute__((aligned)) Rage265_ctb;
 typedef struct {
-	uint8_t *image;
+	uint16_t *image;
 	Rage265_ctb *CTBs;
 	unsigned int needed_for_output:1;
 	unsigned int grey_picture:1; // to be replaced by a number of erroneous CTBs

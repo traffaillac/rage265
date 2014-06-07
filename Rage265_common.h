@@ -4,7 +4,7 @@
 #ifndef RAGE265_COMMON_H
 #define RAGE265_COMMON_H
 
-#if !defined(DEBUG) || DEBUG >= 1
+#if DEBUG >= 1
 #include <stdio.h>
 static inline const char *red_if(int cond) { return (cond) ? " style=\"color: red\"" : ""; }
 #else
@@ -82,7 +82,7 @@ static inline unsigned long umax(unsigned long a, unsigned long b) { return (a >
 /**
  * 9.2 - Exp-Golomb parsing
  */
-static inline __attribute__((always_inline)) unsigned int get_ue_unsafe(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
+static inline __attribute__((always_inline)) unsigned int get_raw_ue(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
 	assert(upper<4294967295);
 	unsigned int leadingZeroBits, res;
 	if (upper <= 31) {
@@ -107,18 +107,18 @@ static inline __attribute__((always_inline)) unsigned int get_ue_unsafe(const ui
 }
 
 static inline __attribute__((always_inline)) unsigned int get_ue(const uint8_t *CPB, unsigned int *shift, unsigned int upper) {
-	return umin(get_ue_unsafe(CPB, shift, upper), upper);
+	return umin(get_raw_ue(CPB, shift, upper), upper);
 }
 
-static inline __attribute__((always_inline)) int get_se_unsafe(const uint8_t *CPB, unsigned int *shift, int lower, int upper) {
-	unsigned int codeNum = get_ue_unsafe(CPB, shift, umax(-lower * 2, upper * 2 - 1));
+static inline __attribute__((always_inline)) int get_raw_se(const uint8_t *CPB, unsigned int *shift, int lower, int upper) {
+	unsigned int codeNum = get_raw_ue(CPB, shift, umax(-lower * 2, upper * 2 - 1));
 	int abs = (codeNum + 1) / 2;
 	int sign = (codeNum % 2) - 1;
 	return (abs ^ sign) - sign;
 }
 
 static inline __attribute__((always_inline)) int get_se(const uint8_t *CPB, unsigned int *shift, int lower, int upper) {
-	return min(max(get_se_unsafe(CPB, shift, lower, upper), lower), upper);
+	return min(max(get_raw_se(CPB, shift, lower, upper), lower), upper);
 }
 
 static inline __attribute__((always_inline)) unsigned int get_uv(const uint8_t * restrict CPB, unsigned int * restrict shift, unsigned int v) {

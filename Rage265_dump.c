@@ -21,7 +21,9 @@ int main() {
 	Rage265_ctx r = {0};
 	for (size_t len, i = 4; i < st.st_size; i += len + 3) {
 		len = Rage265_find_start_code(file + i, st.st_size - i, 1);
-		Rage265_parse_NAL(&r, file + i, len);
+		const Rage265_picture *p = Rage265_parse_NAL(&r, file + i, len);
+		if (p != NULL)
+			printf("<p>Output picture %d</p>\n", p->PicOrderCntVal);
 	}
 	printf("</body>\n"
 		"</html>\n");
