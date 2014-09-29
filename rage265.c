@@ -2,6 +2,10 @@
  * Copyright (c) 2014 Thibault Raffaillac <traf@kth.se>
  */
 
+// TODO: Remplacer les pointeurs de listes par des copies
+// TODO: Faire un "Wrap around" sur les RefPicLists tel que spécifié
+// TODO: Limiter FrameSizeInCtbs à 34816
+
 /**
  * Order of inclusion matters, lower files use functions and variables from
  * higher files. Compiling all dependencies along with the main library has
@@ -13,7 +17,7 @@
  * _ output control: static functions do not appear in the resulting archive,
  *   without having to strip them afterwards.
  */
-#include "Rage265_common.h"
+#include "rage265_common.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -140,7 +144,7 @@ static unsigned int parse_slice_ref_pic_set(Rage265_slice *s, int *unavailable_p
     } else if (s->p.num_short_term_ref_pic_sets > 1) {
         short_term_ref_pic_set_idx = umin(get_uv(r->CPB, &shift,
             WORD_BIT - __builtin_clz(s->p.num_short_term_ref_pic_sets - 1)),
-            s->p.num_short_term_ref_pic_sets);
+            s->p.num_short_term_ref_pic_sets - 1);
         printf("<li>short_term_ref_pic_set_idx: <code>%u</code></li>\n",
             short_term_ref_pic_set_idx);
     }
@@ -238,7 +242,7 @@ static unsigned int parse_ref_pic_lists_modification(Rage265_slice *s, const uin
             for (unsigned int i = 0; i < s->p.num_ref_idx_active[l]; i++) {
                 unsigned int list_entry = umin(get_uv(CPB, &shift,
                     WORD_BIT - __builtin_clz(s->p.num_ref_idx_active[l] - 1)),
-                    s->p.num_ref_idx_active[l]);
+                    s->p.num_ref_idx_active[l] - 1);
                 list[i] = s->RefPicList[l][list_entry];
                 printf("<li>list_entry_l%u[%u]: <code>%u</code></li>\n",
                     l, i, list_entry);
@@ -517,6 +521,7 @@ static const Rage265_picture *parse_slice_segment_layer(Rage265_ctx *r, unsigned
             r->DPB[i].PicOrderCntVal = unavailable_poc;
             size_t ctb_size = num_ctbs * sizeof(Rage265_ctb);
             memset(r->DPB[i].CTBs, 0, ctb_size);
+            /* TODO: Make a loop instead. */
             paint_grey(r->DPB[i].image, s.p.image_offsets[1], s.p.BitDepth_Y);
             paint_grey(r->DPB[i].image + s.p.image_offsets[1], s.p.image_offsets[3] -
                 s.p.image_offsets[1], s.p.BitDepth_C);
@@ -724,8 +729,7 @@ static const Rage265_picture *parse_picture_parameter_set(Rage265_ctx *r, unsign
     p.cb_qp_offset = get_se(r->CPB, &shift, -12, 12);
     p.cr_qp_offset = get_se(r->CPB, &shift, -12, 12);
     p.pps_slice_chroma_qp_offsets_present_flag = get_u1(r->CPB, &shift);
-    p.weighted_pred_flags = get_u1(r->CPB, &shift) << 1;
-    p.weighted_pred_flags |= get_u1(r->CPB, &shift);
+    p.weighted_pred_flags = get_uv(r->CPB, &shift, 2);
     p.transquant_bypass_enabled_flag = get_u1(r->CPB, &shift);
     unsigned int tiles_enabled_flag = get_u1(r->CPB, &shift);
     p.entropy_coding_sync_enabled_flag = get_u1(r->CPB, &shift);
@@ -960,6 +964,50 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
         0x00030002, 0x00020001};
     static const char * const video_format_names[8] = {"Component", "PAL",
         "NTSC", "SECAM", "MAC", [5 ... 7] = "Unspecified"};
+    static const char * const colour_primaries_names[256] = {
+        [0] = "unknown",
+        [1] = "green(0.300,0.600) blue(0.150,0.060) red(0.640,0.330) whiteD65(0.3127,0.3290)",
+        [2] = "Unspecified",
+        [3] = "unknown",
+        [4] = "green(0.21,0.71) blue(0.14,0.08) red(0.67,0.33) whiteC(0.310,0.316)",
+        [5] = "green(0.29,0.60) blue(0.15,0.06) red(0.64,0.33) whiteD65(0.3127,0.3290)",
+        [6 ... 7] = "green(0.310,0.595) blue(0.155,0.070) red(0.630,0.340) whiteD65(0.3127,0.3290)",
+        [8] = "green(0.243,0.692) blue(0.145,0.049) red(0.681,0.319) whiteC(0.310,0.316)",
+        [9] = "green(0.170,0.797) blue(0.131,0.046) red(0.708,0.292) whiteD65(0.3127,0.3290)",
+        [10 ... 255] = "unknown",
+    };
+    static const char * const transfer_characteristics_names[256] = {
+        [0] = "unknown",
+        [1] = "V=1.099*Lc^0.45-0.099 for Lc in [0.018,1], V=4.500*Lc for Lc in [0,0.018[",
+        [2] = "Unspecified",
+        [3] = "unknown",
+        [4] = "Assumed display gamma 2.2",
+        [5] = "Assumed display gamma 2.8",
+        [6] = "V=1.099*Lc^0.45-0.099 for Lc in [0.018,1], V=4.500*Lc for Lc in [0,0.018[",
+        [7] = "V=1.1115*Lc^0.45-0.1115 for Lc in [0.0228,1], V=4.0*Lc for Lc in [0,0.0228[",
+        [8] = "V=Lc for Lc in [0,1[",
+        [9] = "V=1.0+Log10(Lc)/2 for Lc in [0.01,1], V=0.0 for Lc in [0,0.01[",
+        [10] = "V=1.0+Log10(Lc)/2.5 for Lc in [Sqrt(10)/1000,1], V=0.0 for Lc in [0,Sqrt(10)/1000[",
+        [11] = "V=1.099*Lc^0.45-0.099 for Lc>=0.018, V=4.500*Lc for Lc in ]-0.018,0.018[, V=-1.099*(-Lc)^0.45+0.099 for Lc<=-0.018",
+        [12] = "V=1.099*Lc^0.45-0.099 for Lc in [0.018,1.33[, V=4.500*Lc for Lc in [-0.0045,0.018[, V=-(1.099*(-4*Lc)^0.45-0.099)/4 for Lc in [-0.25,-0.0045[",
+        [13] = "V=1.055*Lc^(1/2.4)-0.055 for Lc in [0.0031308,1[, V=12.92*Lc for Lc in [0,0.0031308[",
+        [14] = "V=1.099*Lc^0.45-0.099 for Lc in [0.018,1], V=4.500*Lc for Lc in [0,0.018[",
+        [15] = "V=1.0993*Lc^0.45-0.0993 for Lc in [0.0181,1], V=4.500*Lc for Lc in [0,0.0181[",
+        [16 ... 255] = "unknown",
+    };
+    static const char * const matrix_coeffs_names[256] = {
+        [0] = "unknown",
+        [1] = "Kr = 0.2126; Kb = 0.0722",
+        [2] = "Unspecified",
+        [3] = "unknown",
+        [4] = "Kr = 0.30; Kb = 0.11",
+        [5 ... 6] = "Kr = 0.299; Kb = 0.114",
+        [7] = "Kr = 0.212; Kb = 0.087",
+        [8] = "YCgCo",
+        [9] = "Kr = 0.2627; Kb = 0.0593 (non-constant luminance)",
+        [10] = "Kr = 0.2627; Kb = 0.0593 (constant luminance)",
+        [11 ... 255] = "unknown",
+    };
     
     // shift reaches lim here in the worst case of overflow
     if (get_u1(CPB, &shift)) {
@@ -989,12 +1037,12 @@ static unsigned int parse_vui_parameters(const uint8_t *CPB, unsigned int shift,
             unsigned int colour_primaries = u >> 16;
             unsigned int transfer_characteristics = (u >> 8) & 0xff;
             unsigned int matrix_coeffs = u & 0xff;
-            printf("<li>colour_primaries: <code>%u</code></li>\n"
-                "<li>transfer_characteristics: <code>%u</code></li>\n"
-                "<li>matrix_coeffs: <code>%u</code></li>\n",
-                colour_primaries,
-                transfer_characteristics,
-                matrix_coeffs);
+            printf("<li>colour_primaries: <code>%u (%s)</code></li>\n"
+                "<li>transfer_characteristics: <code>%u (%s)</code></li>\n"
+                "<li>matrix_coeffs: <code>%u (%s)</code></li>\n",
+                colour_primaries, colour_primaries_names[colour_primaries],
+                transfer_characteristics, transfer_characteristics_names[transfer_characteristics],
+                matrix_coeffs, matrix_coeffs_names[matrix_coeffs]);
         }
     }
     if (get_u1(CPB, &shift)) {
@@ -1099,7 +1147,7 @@ static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const u
     c += 12;
     printf("<li%s>general_profile_space: <code>%u</code></li>\n"
         "<li>general_tier_flag: <code>%x</code></li>\n"
-        "<li>general_profile_idc: <code>%u (%s profile)</code></li>\n"
+        "<li>general_profile_idc: <code>%u (%s)</code></li>\n"
         "<li>general_progressive_source_flag: <code>%x</code></li>\n"
         "<li>general_interlaced_source_flag: <code>%x</code></li>\n"
         "<li>general_non_packed_constraint_flag: <code>%x</code></li>\n"
@@ -1112,7 +1160,7 @@ static const uint8_t *parse_profile_tier_level(Rage265_parameter_set *p, const u
         p->general_interlaced_source_flag,
         general_non_packed_constraint_flag,
         general_frame_only_constraint_flag,
-        (float)general_level_idc / 30);
+        (double)general_level_idc / 30);
     /* Sub-layer selection should occur at the demux level, hence any such info is ignored. */
     if (p->max_sub_layers > 1) {
         unsigned int sub_layer_flags = (c[0] << 8) | c[1];
@@ -1165,14 +1213,14 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
         s.pic_width_in_luma_samples,
         s.pic_height_in_luma_samples);
     if (get_u1(r->CPB, &shift)) {
-        unsigned int shiftX = (s.ChromaArrayType == 1 || s.ChromaArrayType == 2);
+        unsigned int shiftX = (s.ChromaArrayType == 1 | s.ChromaArrayType == 2);
         unsigned int shiftY = (s.ChromaArrayType == 1);
-        unsigned int limX = (s.pic_width_in_luma_samples - 1) >> shiftX;
-        unsigned int limY = (s.pic_height_in_luma_samples - 1) >> shiftY;
-        s.conf_win_left_offset = umin(get_raw_ue(r->CPB, &shift, 16887), limX) << shiftX;
-        s.conf_win_right_offset = umin(get_raw_ue(r->CPB, &shift, 16887), limX - s.conf_win_left_offset) << shiftX;
-        s.conf_win_top_offset = umin(get_raw_ue(r->CPB, &shift, 16887), limY) << shiftY;
-        s.conf_win_bottom_offset = umin(get_raw_ue(r->CPB, &shift, 16887), limY - s.conf_win_top_offset) << shiftY;
+        unsigned int limX = (s.pic_width_in_luma_samples - 1) >> shiftX << shiftX;
+        unsigned int limY = (s.pic_height_in_luma_samples - 1) >> shiftY << shiftY;
+        s.conf_win_left_offset = umin(get_raw_ue(r->CPB, &shift, 16887) << shiftX, limX);
+        s.conf_win_right_offset = umin(get_raw_ue(r->CPB, &shift, 16887) << shiftX, limX - s.conf_win_left_offset);
+        s.conf_win_top_offset = umin(get_raw_ue(r->CPB, &shift, 16887) << shiftY, limY);
+        s.conf_win_bottom_offset = umin(get_raw_ue(r->CPB, &shift, 16887) << shiftY, limY - s.conf_win_top_offset);
         printf("<li>conf_win_left_offset: <code>%u</code></li>\n"
             "<li>conf_win_right_offset: <code>%u</code></li>\n"
             "<li>conf_win_top_offset: <code>%u</code></li>\n"
@@ -1285,7 +1333,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
     s.num_short_term_ref_pic_sets = get_ue(r->CPB, &shift, 64);
     printf("<li>num_short_term_ref_pic_sets: <code>%u</code></li>\n",
         s.num_short_term_ref_pic_sets);
-    uint16_t short_term_RPSs[s.num_short_term_ref_pic_sets][16];
+    uint16_t short_term_RPSs[64][16];
     for (unsigned int i = 0; i < s.num_short_term_ref_pic_sets; i++) {
         shift = parse_short_term_ref_pic_set(short_term_RPSs, i, r->CPB, shift,
             s.num_short_term_ref_pic_sets, &s);
@@ -1325,11 +1373,12 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
     if (shift != lim || sps_seq_parameter_set_id > 0 || s.general_profile_space > 0)
         return NULL;
     
-    /* Clear the r->CPB and reallocate the DPB when the image format changes. */
+    /* Clear r->CPB and reallocate the DPB when the image format changes. */
     s.pic_width_in_luma_samples &= -1 << s.MinCbLog2SizeY;
     s.pic_height_in_luma_samples &= -1 << s.MinCbLog2SizeY;
     s.image_offsets[1] = s.pic_width_in_luma_samples * s.pic_height_in_luma_samples;
     if (s.image_offsets[1] > 35651584) {
+        // FIXME: Mettre à jour PicWidthInCtbs y compris !
         s.pic_height_in_luma_samples = 35651584 / s.pic_width_in_luma_samples;
         s.image_offsets[1] = s.pic_width_in_luma_samples * s.pic_height_in_luma_samples;
     }
@@ -1342,12 +1391,12 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
         (s.pic_height_in_luma_samples ^ r->SPS.pic_height_in_luma_samples) |
         (s.BitDepth_Y ^ r->SPS.BitDepth_Y) | (s.BitDepth_C ^ r->SPS.BitDepth_C) |
         (s.max_dec_pic_buffering ^ r->SPS.max_dec_pic_buffering)) {
-        free((uint8_t *)r->CPB);
+        free(r->CPB);
         r->CPB = NULL;
         r->CPB_size = 0;
-        size_t ctb_size = s.PicWidthInCtbsY * s.PicHeightInCtbsY * sizeof(Rage265_ctb);
         if (r->DPB[0].image != NULL)
             free(r->DPB[0].image);
+        size_t ctb_size = s.PicWidthInCtbsY * s.PicHeightInCtbsY * sizeof(Rage265_ctb);
         void *p = malloc(s.max_dec_pic_buffering * (s.image_offsets[3] * 2 + ctb_size));
         for (unsigned int i = 0; i < s.max_dec_pic_buffering; i++) {
             r->DPB[i].image = p + i * (s.image_offsets[3] * 2 + ctb_size);
@@ -1358,7 +1407,7 @@ static const Rage265_picture *parse_sequence_parameter_set(Rage265_ctx *r, unsig
         memset(r->PPSs, 0, sizeof(r->PPSs));
     }
     r->SPS = s;
-    memcpy(r->short_term_RPSs, short_term_RPSs, sizeof(short_term_RPSs));
+    memcpy(r->short_term_RPSs, short_term_RPSs, 32 * s.num_short_term_ref_pic_sets);
     return NULL;
 }
 

@@ -1,0 +1,2 @@
+$ CC rage265_dump.c -O2 -mssse3
+$ ./a.out <video.265 >dump.html
